@@ -148,10 +148,16 @@ architecture behav of top is
 	signal sw_d:   std_logic_vector(sw'range) := (others => '0');
 
 	-- LFSR
-	constant lfsr_tap: std_logic_vector(14 downto 0) := "100000000001011";
-	signal lfsr_o:     std_logic_vector(lfsr_tap'high + 1 downto lfsr_tap'low);
-	signal lfsr_i:     std_logic_vector(lfsr_o'range);
-	signal lfsr_i_we:  std_logic := '0';
+-- 	constant lfsr_tap: std_logic_vector(14 downto 0) := "100000000001011";
+-- 	signal lfsr_o:     std_logic_vector(lfsr_tap'high + 1 downto lfsr_tap'low);
+-- 	signal lfsr_i:     std_logic_vector(lfsr_o'range);
+-- 	signal lfsr_i_we:  std_logic := '0';
+
+
+	constant div_length: positive := 8;
+	signal div_a, div_b: std_logic_vector(div_length - 1 downto 0) := (others => '0');
+	signal div_c:        unsigned(div_length - 1 downto 0) := (others => '0');
+	signal div_done, div_start: std_logic := '0';
 begin
 -------------------------------------------------------------------------------
 -- The Main components
@@ -260,7 +266,9 @@ begin
 		tx_fifo_full,
 		tx_fifo_empty,
 
-		lfsr_o,
+		--lfsr_o,
+
+		div_done, div_c,
 
 		timer_control_o,
 		timer_counter_o)
@@ -296,9 +304,11 @@ begin
 		vga_control.ctl  <= io_dout(vga_control.ctl'range);
 		leds_reg         <= io_dout;
 		tx_data          <= io_dout(tx_data'range);
-		lfsr_i           <= io_dout;
-		lfsr_i_we        <= '0';
-
+		--lfsr_i           <= io_dout;
+		--lfsr_i_we        <= '0';
+		div_a            <= io_dout(15 downto 8);
+		div_b            <= io_dout( 7 downto 0);
+		div_start        <= '0';
 		-- @note a 32 bit ALU could be added as an I/O port for
 		-- multiplication and addition at least. This should speed
 		-- up the CPU.
@@ -330,8 +340,10 @@ begin
 				io_din(8)          <= kbd_new_c;
 				kbd_new_n          <= '0';
 			when "110" =>
-				io_din             <= lfsr_o;
-
+				--io_din             <= lfsr_o;
+			when "111" =>
+				io_din(div_c'range) <= std_logic_vector(div_c);
+				io_din(div_c'high + 1) <= div_done;
 			when others => io_din <= (others => '0');
 			end case;
 		elsif io_wr = '1' and io_daddr(15) = '0' then
@@ -359,8 +371,9 @@ begin
 			when "110" => -- CPU Mask
 				cpu_irc_mask_we <= '1';
 			when "111" =>
-				lfsr_i <= io_dout;
-				lfsr_i_we <= '1';
+				div_start <= '1';
+				--lfsr_i <= io_dout;
+				--lfsr_i_we <= '1';
 			when others =>
 			end case;
 		end if;
@@ -567,9 +580,20 @@ begin
 
 	--- LFSR ----------------------------------------------------------
 
-	lfsr_0: entity work.lfsr generic map(tap => lfsr_tap) port map(clk => clk, rst => rst, ce => '1', di => lfsr_i, we => lfsr_i_we, do => lfsr_o);
+	--lfsr_0: entity work.lfsr generic map(tap => lfsr_tap) port map(clk => clk, rst => rst, ce => '1', di => lfsr_i, we => lfsr_i_we, do => lfsr_o);
 
 	--- LFSR ----------------------------------------------------------
+
+
+	--- Divider -------------------------------------------------------
+
+	divider_0: entity work.restoring_divider 
+		generic map(N => div_length)
+		port map(clk => clk, rst => rst, a => unsigned(div_a), b =>
+			unsigned(div_b), start => div_start, done => div_done,
+			c => div_c);
+
+	--- Divider -------------------------------------------------------
 
 	--- uCPU ----------------------------------------------------------
 --      -- uCPU test code
