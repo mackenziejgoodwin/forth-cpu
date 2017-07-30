@@ -2055,49 +2055,52 @@ architecture rtl of restoring_divider is
 	signal m_c, m_n: unsigned(b'range) := (others => '0');
 	signal o_c, o_n: unsigned(c'range) := (others => '0');
 	signal e_c, e_n: std_logic         := '0';
+	signal count_c, count_n: unsigned(work.util.n_bits(N) downto 0) := (others => '0');
 begin
 	c <= o_n;
 
 	process(clk, rst)
 	begin
 		if rst = '1' then
-			a_c <= (others => '0');
-			b_c <= (others => '0');
-			m_c <= (others => '0');
-			o_c <= (others => '0');
-			e_c <= '0';
+			a_c      <=  (others  =>  '0');
+			b_c      <=  (others  =>  '0');
+			m_c      <=  (others  =>  '0');
+			o_c      <=  (others  =>  '0');
+			e_c      <=  '0';
+			count_c  <=  (others  =>  '0');
 		elsif rising_edge(clk) then
-			a_c <= a_n;
-			b_c <= b_n;
-			m_c <= m_n;
-			o_c <= o_n;
-			e_c <= e_n;
+			a_c      <=  a_n;
+			b_c      <=  b_n;
+			m_c      <=  m_n;
+			o_c      <=  o_n;
+			e_c      <=  e_n;
+			count_c  <=  count_n;
 		end if;
 	end process;
 
-	divide: process(a, b, start, a_c, b_c, m_c, e_c, o_c)
+	divide: process(a, b, start, a_c, b_c, m_c, e_c, o_c, count_c)
 		variable m_v: unsigned(b'range) := (others => '0');
-		variable count: unsigned(work.util.n_bits(N) downto 0) := (others => '0');
 	begin
-		done <= '0';
-		a_n  <= a_c;
-		b_n  <= b_c;
-		m_v  := m_c;
-		e_n  <= e_c;
-		o_n  <= o_c;
+		done     <=  '0';
+		a_n      <=  a_c;
+		b_n      <=  b_c;
+		m_v      :=  m_c;
+		e_n      <=  e_c;
+		o_n      <=  o_c;
+		count_n  <=  count_c;
 		if start = '1' then
 			a_n   <= a;
 			b_n   <= b;
 			m_v   := (others => '0');
 			e_n   <= '1';
 			o_n   <= (others => '0');
-			count := (others => '0');
+			count_n <= (others => '0');
 		elsif e_c = '1' then
-			if count(count'high) = '1' then 
+			if count_c(count_c'high) = '1' then 
 				done  <= '1';
 				e_n   <= '0';
-				count := (others => '0');
 				o_n   <= a_c;
+				count_n <= (others => '0');
 			else
 				m_v(b'high downto 1) := m_v(b'high - 1 downto 0);
 				m_v(0) := a_c(a'high);
@@ -2109,10 +2112,10 @@ begin
 				else
 					a_n(0) <= '1';
 				end if;
-				count := count + 1;
+				count_n <= count_c + 1;
 			end if;
 		else
-			count := (others => '0');
+			count_n <= (others => '0');
 		end if;
 		m_n <= m_v;
 	end process;
