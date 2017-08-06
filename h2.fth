@@ -832,22 +832,22 @@ variable mram     0
 constant mwin-max $1ff
 
 : mcontrol! ( u -- : write to memory control register )
-	mram @ if $400 or then   ( select correct memory device )
+	\ mram @ if $400 or then   ( select correct memory device )
 	mwin-max invert    and   ( mask off control bits )
-	mwindow @ mwindow and or ( or in higher address bits )
+	mwindow @ mwin-max and or ( or in higher address bits )
 	oMemControl ! ;          ( and finally write in control )
 
 : m! ( n a -- : write to non-volatile memory )
 	oMemAddrLow !
 	oMemDout !
 	20 40ns 
-	$8800 mcontrol! 
+	$8400 mcontrol! 
 	20 40ns 
 	$0000 mcontrol! ;
 
 : m@ ( a -- n : read from non-volatile memory )
 	oMemAddrLow !
-	$4800 mcontrol! ( read enable mode )
+	$4400 mcontrol! ( read enable mode )
 	20 40ns 
 	iMemDin @        ( get input )
 	$0000 mcontrol! ;
@@ -1055,7 +1055,7 @@ manipulating a terminal )
       s    save block and write it out
       u    update block )
 
-( 
+ 
 location .forth 0
 location .editor 0
 : forth .forth @ pwd ! ;
@@ -1087,7 +1087,7 @@ location .editor 0
 : ea [line] c/l evaluate ;
 : sw 2dup y [line] swap [line] swap c/l cmove c ;
 .set .editor $pwd
-) 
+ 
 
 
 ( ======================== Starting Code ==================== )
