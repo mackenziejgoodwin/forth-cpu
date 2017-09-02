@@ -253,51 +253,70 @@ begin
 		mem_data_i_we      <= '1'         when is_write and selector = x"8" else '0';
 	end block;
 
-	io_read: process(
-		io_wr, io_re, io_daddr,
-		sw_d, rx, btnu_d, btnd_d, btnl_d, btnr_d, btnc_d,
-		kbd_char_buf_new, kbd_char_buf,
-
-		rx_data_n,
-		rx_fifo_empty,
-		rx_fifo_full,
-
-		tx_fifo_full,
-		tx_fifo_empty,
-
-		timer_counter_o,
-
-		vga_data_busy,
-
-		mem_data_o)
-	begin
-
-		io_din <= (others => '0');
-
+	io_read: block 
 		-- The signal io_re is not needed as none of the reads have
 		-- any side effects
-		case io_daddr(3 downto 1) is
-		when "000" => -- buttons, plus direct access to UART bit.
-			io_din(7 downto 0) <= rx_data_n;
-			io_din(8)          <= rx_fifo_empty;
-			io_din(9)          <= rx_fifo_full;
-			io_din(11)         <= tx_fifo_empty;
-			io_din(12)         <= tx_fifo_full;
-		when "001" => -- VT100 status and Keyboard
-			io_din(6 downto 0) <= kbd_char_buf;
-			io_din(8)          <= not kbd_char_buf_new;
-			io_din(9)          <= kbd_char_buf_new;
-			io_din(11)         <= not vga_data_busy;
-			io_din(12)         <= vga_data_busy;
-		when "010" => -- Timer in
-			io_din(timer_counter_o'range) <= timer_counter_o;
-		when "011" => -- Switches and buttons
-			io_din <= "00" & rx & btnu_d & btnd_d & btnl_d & btnr_d & btnc_d & sw_d;
-		when "100" =>
-			io_din             <= mem_data_o;
-		when others => io_din <= (others => '0');
-		end case;
-	end process;
+
+		type read_array_type is array (4 downto 0) of std_logic_vector(15 downto 0);
+		signal read_array_c, read_array_n: read_array_type := (others => (others => '0'));
+	begin
+		process(clk, rst)
+		begin
+			if rst = '1' then
+				read_array_c <= (others => (others => '0'));
+			elsif rising_edge(clk) then
+				read_array_c <= read_array_n;
+			end if;
+		end process;
+
+		process(
+			io_wr, io_re, io_daddr,
+			sw_d, rx, btnu_d, btnd_d, btnl_d, btnr_d, btnc_d,
+			kbd_char_buf_new, kbd_char_buf,
+
+			rx_data_n,
+			rx_fifo_empty,
+			rx_fifo_full,
+
+			tx_fifo_full,
+			tx_fifo_empty,
+
+			timer_counter_o,
+
+			vga_data_busy,
+
+			mem_data_o,
+		
+			read_array_c)
+		begin
+			read_array_n <= read_array_c;
+
+			io_din <= (others => '0');
+
+			read_array_n(0)(7 downto 0) <= rx_data_n;
+			read_array_n(0)(8)          <= rx_fifo_empty;
+			read_array_n(0)(9)          <= rx_fifo_full;
+			read_array_n(0)(11)         <= tx_fifo_empty;
+			read_array_n(0)(12)         <= tx_fifo_full;
+			read_array_n(1)(6 downto 0) <= kbd_char_buf;
+			read_array_n(1)(8)          <= not kbd_char_buf_new;
+			read_array_n(1)(9)          <= kbd_char_buf_new;
+			read_array_n(1)(11)         <= not vga_data_busy;
+			read_array_n(1)(12)         <= vga_data_busy;
+			read_array_n(2)(timer_counter_o'range) <= timer_counter_o;
+			read_array_n(3)             <= "00" & rx & btnu_d & btnd_d & btnl_d & btnr_d & btnc_d & sw_d;
+			read_array_n(4)             <= mem_data_o;
+
+			case io_daddr(3 downto 1) is
+			when "000" => io_din <= read_array_c(0);
+			when "001" => io_din <= read_array_c(1);
+			when "010" => io_din <= read_array_c(2);
+			when "011" => io_din <= read_array_c(3);
+			when "100" => io_din <= read_array_c(4);
+			when others => io_din <= (others => '0');
+			end case;
+		end process;
+	end block;
 
 	--- UART ----------------------------------------------------------
 	-- @todo Move registers inside UART module
