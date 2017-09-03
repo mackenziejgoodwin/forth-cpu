@@ -21,6 +21,22 @@ package h2_pkg is
 	constant hardware_cpu_id: word   := X"CAFE";
 	constant simulation_cpu_id: word := X"DEAD";
 
+	component ram is
+		generic(ram_size_log2: positive);
+		port(
+			clk: in  std_logic;
+
+			dia: in  word      := (others => '0');
+			dwa: in  std_logic := '0';
+			doa: out word;
+			daa: in  std_logic_vector(ram_size_log2 - 1 downto 0) := (others => '0');
+		
+			dib: in  word      := (others => '0');
+			dwb: in  std_logic := '0';
+			dob: out word;
+			dab: in  std_logic_vector(ram_size_log2 - 1 downto 0) := (others => '0'));
+	end component;
+
 	component h2 is
 		generic(
 			cpu_id:                   word     := hardware_cpu_id; -- Value for the CPU ID instruction
@@ -55,6 +71,49 @@ package h2_pkg is
 			daddr:    out address);  -- RAM address
 	end component;
 end;
+
+library ieee,work,std;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use ieee.math_real.all; -- only needed for calculations relating to generics
+use work.h2_pkg.word;
+
+entity ram is
+	generic(ram_size_log2: positive);
+	port(
+		clk: in  std_logic;
+
+		dia: in  word      := (others => '0');
+		dwa: in  std_logic := '0';
+		doa: out word;
+		daa: in  std_logic_vector(ram_size_log2 - 1 downto 0) := (others => '0');
+	
+		dib: in  word      := (others => '0');
+		dwb: in  std_logic := '0';
+		dob: out word;
+		dab: in  std_logic_vector(ram_size_log2 - 1 downto 0) := (others => '0'));
+end entity;
+
+architecture rtl of ram is
+	constant ram_size: integer := 2 ** ram_size_log2;
+	type     ram_type is array (ram_size - 1 downto 0) of word;
+	signal   ram: ram_type     := (others => (others => '0')); -- variable stack
+begin
+	doa <= ram(to_integer(unsigned(daa)));
+	dob <= ram(to_integer(unsigned(dab)));
+
+	ram_write: process(clk)
+	begin
+		if rising_edge(clk) then
+			if dwa = '1' then
+				ram(to_integer(unsigned(daa))) <= dia;
+			end if;
+			if dwb = '1' then
+				ram(to_integer(unsigned(dab))) <= dib;
+			end if;
+		end if;
+	end process;
+end architecture;
 
 library ieee,work,std;
 use ieee.std_logic_1164.all;
@@ -103,16 +162,13 @@ architecture rtl of h2 is
 	signal pc_plus_one: address := (others => '0');
 
 	constant stack_size: integer := 2 ** stack_size_log2;
-	type     stack_type is array (stack_size - 1 downto 0) of word;
 	subtype  depth is unsigned(stack_size_log2 - 1 downto 0);
 
 	signal vstkp_c, vstkp_n:  depth := (others => '0');             -- variable stack pointer
-	signal vstk_ram: stack_type     := (others => (others => '0')); -- variable stack
 	signal dstk_we: std_logic       := '0';                         -- variable stack write enable
 	signal dd: depth                := (others => '0');             -- variable stack delta
 
 	signal rstkp_c, rstkp_n:  depth := (others => '0');             -- return stack pointer
-	signal rstk_ram: stack_type     := (others => (others => '0')); -- return stack
 	signal rstk_we: std_logic       := '0';                         -- return stack write enable
 	signal rd: depth                := (others => '0');             -- return stack delta
 
@@ -162,8 +218,6 @@ begin
 	compare.umore    <= '1' when unsigned(tos_c) > unsigned(nos) else '0';
 	compare.equal    <= '1' when tos_c = nos else '0';
 	compare.zero     <= '1' when unsigned(tos_c(15 downto 0)) = 0 else '0';
-	nos              <= vstk_ram(to_integer(vstkp_c));
-	rtos_c           <= rstk_ram(to_integer(rstkp_c));
 	pc               <= pc_n;
 	pc_plus_one      <= std_logic_vector(unsigned(pc_c) + 1);
 	dout             <= nos;
@@ -177,17 +231,35 @@ begin
 	rd               <= (0 => insn(2), others => insn(3)); -- sign extend
 	dstk_we          <= '1' when is_instr.lit = '1' or (is_instr.alu = '1' and insn(7) = '1') else '0';
 
-	stack_write: process(clk)
-	begin
-		if rising_edge(clk) then
-			if dstk_we = '1' then
-				vstk_ram(to_integer(vstkp_n)) <= tos_c;
-			end if;
-			if rstk_we = '1' then
-				rstk_ram(to_integer(rstkp_n)) <= rstk_data;
-			end if;
-		end if;
-	end process;
+	variable_stack: work.h2_pkg.ram
+	generic map(ram_size_log2 => stack_size_log2)
+	port map(
+		clk => clk,
+
+		dia => (others => '0'),
+		dwa => '0',
+		doa => nos,
+		daa => std_logic_vector(vstkp_c),
+	
+		dib => tos_c,
+		dwb => dstk_we,
+		dob => open,
+		dab => std_logic_vector(vstkp_n));
+
+	return_stack: work.h2_pkg.ram
+	generic map(ram_size_log2 => stack_size_log2)
+	port map(
+		clk => clk,
+
+		dia => (others => '0'),
+		dwa => '0',
+		doa => rtos_c,
+		daa => std_logic_vector(rstkp_c),
+	
+		dib => rstk_data,
+		dwb => rstk_we,
+		dob => open,
+		dab => std_logic_vector(rstkp_n));
 
 	alu_select: process(insn, is_instr, is_interrupt)
 	begin
