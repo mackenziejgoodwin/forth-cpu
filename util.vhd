@@ -7,21 +7,6 @@
 --| @copyright      Copyright 2017 Richard James Howe
 --| @license        MIT
 --| @email          howe.r.j.89@gmail.com
---|
---| @todo Add mux, demux (X To N, IN/OUT), debouncer, serial to parallel (and
---| vice versa), pulse generator, population count, priority encoder, types,
---| gray codes, CORDIC, Manchester encoder/decoder and other generic functions
---| and components. Configurable Logic Block primitives could also be
---| provided. Debouncers and a UART of my own design would also be useful. As
---| would a Run Length Encoder compression/decompression core
---| @todo Some simple communications primitives could be added in here, such
---| as a SPI master. Another one would be a pin control module that can
---| be used to control physical pins on the FPGA with a pin direction register,
---| an input and an output register.
---| @todo Add a CRC module, and a XXTEA (https://en.wikipedia.org/wiki/XXTEA),
---| these should be customizable so a different number of rounds can be
---| selected per clock cycle.
---| @todo Document each component extensively, with timing diagrams.
 -------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -191,11 +176,13 @@ package util is
 		generic(clock_frequency: positive);
 	end component;
 
+	type file_format is (FILE_HEX, FILE_BINARY, FILE_NONE);
+
 	component dual_port_block_ram is
-	generic(addr_length: positive  := 12;
-		data_length: positive  := 16;
-		file_name:   string   := "memory.bin";
-		file_type:   string   := "bin");
+	generic(addr_length: positive    := 12;
+		data_length: positive    := 16;
+		file_name:   string      := "memory.bin";
+		file_type:   file_format := FILE_BINARY);
 	port(
 		-- port A of dual port RAM
 		a_clk:  in  std_logic;
@@ -214,10 +201,10 @@ package util is
 	end component;
 
 	component single_port_block_ram is
-	generic(addr_length: positive := 12;
-		data_length: positive := 16;
-		file_name:   string   := "memory.bin";
-		file_type:   string   := "bin");
+	generic(addr_length: positive    := 12;
+		data_length: positive    := 16;
+		file_name:   string      := "memory.bin";
+		file_type:   file_format := FILE_BINARY);
 	port(
 		clk:  in  std_logic;
 		dwe:  in  std_logic;
@@ -228,10 +215,10 @@ package util is
 	end component;
 
 	component data_source is
-		generic(addr_length: positive := 12;
-			data_length: positive := 16;
-			file_name:   string   := "memory.bin";
-			file_type:   string   := "bin");
+		generic(addr_length: positive    := 12;
+			data_length: positive    := 16;
+			file_name:   string      := "memory.bin";
+			file_type:   file_format := FILE_BINARY);
 		port(
 			clk:     in  std_logic;
 			rst:     in  std_logic;
@@ -290,8 +277,33 @@ package util is
 			do:    out std_logic);
 	end component;
 
+	component debounce_block_us is
+		generic(N: positive; clock_frequency: positive; timer_period_us: natural);
+		port(
+			clk:   in  std_logic;
+			di:    in  std_logic_vector(N - 1 downto 0);
+			do:    out std_logic_vector(N - 1 downto 0));
+	end component;
+
 	component debounce_us_tb is
 		generic(clock_frequency: positive);
+	end component;
+
+	component state_changed is
+		port(
+			clk: in  std_logic;
+			rst: in  std_logic;
+			di:  in  std_logic;
+			do:  out std_logic);
+	end component;
+
+	component state_block_changed is
+		generic(N: positive);
+		port(
+			clk: in  std_logic;
+			rst: in  std_logic;
+			di:  in  std_logic_vector(N - 1 downto 0);
+			do:  out std_logic_vector(N - 1 downto 0));
 	end component;
 
 	function max(a: natural; b: natural) return natural;
@@ -818,12 +830,6 @@ end;
 ------------------------- Shift register --------------------------------------------
 
 ------------------------- Microsecond Timer -----------------------------------------
---| @todo There is a special case for the microsecond timer, one where we do
---| not have to use a comparator, but instead we can use the top bit of a
---| counter to signal the timer has elapsed. This special case could be
---| selected for with generics. The situation occurs when the cycles variable
---| is a power of two less one.
-
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -902,7 +908,6 @@ end;
 ------------------------- Microsecond Timer -----------------------------------------
 
 ------------------------- Edge Detector ---------------------------------------------
---| @todo have generic to decide whether it is on the rising or falling edge
 library ieee;
 use ieee.std_logic_1164.all;
 
@@ -1637,7 +1642,7 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use std.textio.all;
-use work.util.hex_char_to_std_logic_vector;
+use work.util.all;
 
 entity dual_port_block_ram is
 
@@ -1647,14 +1652,11 @@ entity dual_port_block_ram is
 	--
 	-- Valid file_type options include:
 	--
-	-- "bin"  - A binary file (ASCII '0' and '1', one number per line)
-	-- "hex"  - A Hex file (ASCII '0-9' 'a-f', 'A-F', one number per line)
-	-- "nil"  - RAM contents will be defaulted to all zeros, no file will
-	--          be read from
+	-- FILE_BINARY - A binary file (ASCII '0' and '1', one number per line)
+	-- FILE_HEX    - A Hex file (ASCII '0-9' 'a-f', 'A-F', one number per line)
+	-- FILE_NONE   - RAM contents will be defaulted to all zeros, no file will
+	--               be read from
 	--
-	-- @todo Change interface so it uses enumerations to specify the file
-	-- type, also hexadecimals also currently do not cope with converting to
-	-- vectors that are not multiples of 4 in length, this should be fixed.
 	-- @todo Read in actual binary data files, see: https://stackoverflow.com/questions/14173652
 	--
 	-- The data length must be divisible by 4 if the "hex" option is
@@ -1663,10 +1665,10 @@ entity dual_port_block_ram is
 	-- These default values for addr_length and data_length have been
 	-- chosen so as to fill the block RAM available on a Spartan 6.
 	--
-	generic(addr_length: positive := 12;
-		data_length: positive := 16;
-		file_name:   string   := "memory.bin";
-		file_type:   string   := "bin");
+	generic(addr_length: positive    := 12;
+		data_length: positive    := 16;
+		file_name:   string      := "memory.bin";
+		file_type:   file_format := FILE_BINARY);
 	port(
 		--| Port A of dual port RAM
 		a_clk:  in  std_logic;
@@ -1689,7 +1691,7 @@ architecture behav of dual_port_block_ram is
 
 	type ram_type is array ((ram_size - 1 ) downto 0) of std_logic_vector(data_length - 1 downto 0);
 
-	impure function initialize_ram(file_name, file_type: in string) return ram_type is
+	impure function initialize_ram(file_name: in string; file_type: in file_format) return ram_type is
 		variable ram_data:   ram_type;
 		file     in_file:    text is in file_name;
 		variable input_line: line;
@@ -1698,14 +1700,14 @@ architecture behav of dual_port_block_ram is
 		variable slv:        std_logic_vector(data_length - 1 downto 0);
 	begin
 		for i in 0 to ram_size - 1 loop
-			if file_type = "nil" then
+			if file_type = FILE_NONE then
 				ram_data(i):=(others => '0');
 			elsif not endfile(in_file) then
 				readline(in_file,input_line);
-				if file_type = "bin" then -- binary
+				if file_type = FILE_BINARY then
 					read(input_line, tmp);
 					ram_data(i) := to_stdlogicvector(tmp);
-				elsif file_type = "hex" then -- hexadecimal
+				elsif file_type = FILE_HEX then
 					assert (data_length mod 4) = 0 report "(data_length%4)!=0" severity failure;
 					for j in 1 to (data_length/4) loop
 						c:= input_line((data_length/4) - j + 1);
@@ -1713,7 +1715,7 @@ architecture behav of dual_port_block_ram is
 					end loop;
 					ram_data(i) := slv;
 				else
-					report "Incorrect file type given: " & file_type severity failure;
+					report "Incorrect file type given: " & file_format'image(file_type) severity failure;
 				end if;
 			else
 				ram_data(i) := (others => '0');
@@ -1761,13 +1763,13 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use std.textio.all;
-use work.util.dual_port_block_ram;
+use work.util.all;
 
 entity single_port_block_ram is
-	generic(addr_length: positive := 12;
-		data_length: positive := 16;
-		file_name:   string   := "memory.bin";
-		file_type:   string   := "bin");
+	generic(addr_length: positive    := 12;
+		data_length: positive    := 16;
+		file_name:   string      := "memory.bin";
+		file_type:   file_format := FILE_BINARY);
 	port(
 		clk:  in  std_logic;
 		dwe:  in  std_logic;
@@ -1778,26 +1780,60 @@ entity single_port_block_ram is
 end entity;
 
 architecture behav of single_port_block_ram is
-begin
-	ram: work.util.dual_port_block_ram
-		generic map(
-			addr_length => addr_length,
-			data_length => data_length,
-			file_name   => file_name,
-			file_type   => file_type)
-		port map(
-			a_clk  => clk,
-			a_addr => addr,
-			a_dwe  => dwe,
-			a_dre  => dre,
-			a_din  => din,
-			a_dout => dout,
+	constant ram_size: positive := 2 ** addr_length;
 
-			b_clk  => '0',
-			b_addr => (others => '0'),
-			b_dwe  => '0',
-			b_dre  => '0',
-			b_din  => (others => '0'));
+	type ram_type is array ((ram_size - 1 ) downto 0) of std_logic_vector(data_length - 1 downto 0);
+
+	impure function initialize_ram(file_name: in string; file_type: in file_format) return ram_type is
+		variable ram_data:   ram_type;
+		file     in_file:    text is in file_name;
+		variable input_line: line;
+		variable tmp:        bit_vector(data_length - 1 downto 0);
+		variable c:          character;
+		variable slv:        std_logic_vector(data_length - 1 downto 0);
+	begin
+		for i in 0 to ram_size - 1 loop
+			if file_type = FILE_NONE then
+				ram_data(i):=(others => '0');
+			elsif not endfile(in_file) then
+				readline(in_file,input_line);
+				if file_type = FILE_BINARY then
+					read(input_line, tmp);
+					ram_data(i) := to_stdlogicvector(tmp);
+				elsif file_type = FILE_HEX then -- hexadecimal
+					assert (data_length mod 4) = 0 report "(data_length%4)!=0" severity failure;
+					for j in 1 to (data_length/4) loop
+						c:= input_line((data_length/4) - j + 1);
+						slv((j*4)-1 downto (j*4)-4) := hex_char_to_std_logic_vector(c);
+					end loop;
+					ram_data(i) := slv;
+				else
+					report "Incorrect file type given: " & file_format'image(file_type) severity failure;
+				end if;
+			else
+				ram_data(i) := (others => '0');
+			end if;
+		end loop;
+		file_close(in_file);
+		return ram_data;
+	end function;
+
+	shared variable ram: ram_type := initialize_ram(file_name, file_type);
+begin
+	block_ram: process(clk)
+	begin
+		if rising_edge(clk) then
+			if dwe = '1' then
+				ram(to_integer(unsigned(addr))) := din;
+			end if;
+
+			if dre = '1' then
+				dout <= ram(to_integer(unsigned(addr)));
+			else
+				dout <= (others => '0');
+			end if;
+		end if;
+	end process;
 end architecture;
 
 ------------------------- Single and Dual Port Block RAM ----------------------------
@@ -1818,12 +1854,13 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use work.util.single_port_block_ram;
 use work.util.counter;
+use work.util.all;
 
 entity data_source is
-	generic(addr_length: positive := 12;
-		data_length: positive := 16;
-		file_name:   string   := "memory.bin";
-		file_type:   string   := "bin");
+	generic(addr_length: positive    := 12;
+		data_length: positive    := 16;
+		file_name:   string      := "memory.bin";
+		file_type:   file_format := FILE_BINARY);
 	port(
 		clk:     in  std_logic;
 		rst:     in  std_logic;
@@ -1961,6 +1998,7 @@ library ieee,work;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use ieee.math_real.all;
+use work.util.all;
 
 entity ucpu_tb is
 	generic(
@@ -1995,7 +2033,7 @@ begin
 		addr_length => addr_length,
 		data_length => data_length,
 		file_name   => file_name,
-		file_type   => "bin")
+		file_type   => FILE_BINARY)
 	port map(
 		a_clk   =>  clk,
 		a_dwe   =>  '0',
@@ -2037,7 +2075,7 @@ end architecture;
 ------------------------- uCPU ------------------------------------------------------
 
 ------------------------- Restoring Division ----------------------------------------
--- @todo Add remainder to output, renames signals, make a
+-- @todo Add remainder to output, rename signals, make a
 -- better test bench, add non-restoring division, and describe module
 --
 -- Computes a/b in N cycles
@@ -2062,7 +2100,7 @@ entity restoring_divider is
 		c:     out unsigned(N - 1 downto 0));
 end entity;
 
-architecture rtl of restoring_divider is 
+architecture rtl of restoring_divider is
 	signal a_c, a_n: unsigned(a'range) := (others => '0');
 	signal b_c, b_n: unsigned(b'range) := (others => '0');
 	signal m_c, m_n: unsigned(b'range) := (others => '0');
@@ -2109,7 +2147,7 @@ begin
 			o_n   <= (others => '0');
 			count_n <= (others => '0');
 		elsif e_c = '1' then
-			if count_c(count_c'high) = '1' then 
+			if count_c(count_c'high) = '1' then
 				done  <= '1';
 				e_n   <= '0';
 				o_n   <= a_c;
@@ -2159,7 +2197,7 @@ begin
 		generic map(clock_frequency => clock_frequency, hold_rst => 2)
 		port map(stop => stop, clk => clk, rst => rst);
 
-	uut: entity work.restoring_divider 
+	uut: entity work.restoring_divider
 		generic map(N => N)
 		port map(
 			clk   => clk,
@@ -2208,16 +2246,16 @@ entity debounce_us is
 	port(
 		clk:   in  std_logic;
 		di:    in  std_logic;
-		do:    out std_logic := '0');
+		do:    out std_logic);
 end entity;
 
-architecture rtl of debounce_us is 
+architecture rtl of debounce_us is
 	signal ff: std_logic_vector(1 downto 0) := (others => '0');
 	signal rst, done: std_logic             := '0';
 begin
 	timer: work.util.timer_us
 		generic map(
-			clock_frequency => clock_frequency, 
+			clock_frequency => clock_frequency,
 			timer_period_us => timer_period_us)
 		port map(
 			clk => clk,
@@ -2274,3 +2312,89 @@ begin
 	end process;
 end architecture;
 ------------------------- Debouncer -----------------------------------------------------------
+
+------------------------- Debouncer Block -----------------------------------------------------
+library ieee,work;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity debounce_block_us is
+	generic(N: positive; clock_frequency: positive; timer_period_us: natural);
+	port(
+		clk:   in  std_logic;
+		di:    in  std_logic_vector(N - 1 downto 0);
+		do:    out std_logic_vector(N - 1 downto 0));
+end entity;
+
+architecture structural of debounce_block_us is
+begin
+	debouncer: for i in N - 1 downto 0 generate
+		d_instance: work.util.debounce_us
+			generic map(
+				clock_frequency => clock_frequency,
+				timer_period_us => timer_period_us)
+			port map(clk => clk, di => di(i), do => do(i));
+	end generate;
+end architecture;
+
+------------------------- Debouncer Block -----------------------------------------------------
+
+------------------------- State Changed -------------------------------------------------------
+library ieee,work;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity state_changed is
+	port(
+		clk: in  std_logic;
+		rst: in  std_logic;
+		di:  in  std_logic;
+		do:  out std_logic);
+end entity;
+
+architecture rtl of state_changed is
+	signal state_c, state_n: std_logic_vector(1 downto 0) := (others => '0');
+begin
+	process(clk, rst)
+	begin
+		if rst = '1' then
+			state_c <= (others => '0');
+		elsif rising_edge(clk) then
+			state_c <= state_n;
+		end if;
+	end process;
+
+	do <= '1' when (state_c(0) xor state_c(1)) = '1' else '0';
+
+	process(di, state_c)
+	begin
+		state_n(0) <= state_c(1);
+		state_n(1) <= di;
+	end process;
+end architecture;
+
+------------------------- Change State --------------------------------------------------------
+
+------------------------- Change State Block --------------------------------------------------
+library ieee,work;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity state_block_changed is
+	generic(N: positive);
+	port(
+		clk: in  std_logic;
+		rst: in  std_logic;
+		di:  in  std_logic_vector(N - 1 downto 0);
+		do:  out std_logic_vector(N - 1 downto 0));
+end entity;
+
+architecture structural of state_block_changed is
+begin
+	changes: for i in N - 1 downto 0 generate
+		d_instance: work.util.state_changed
+			port map(clk => clk, rst => rst, di => di(i), do => do(i));
+	end generate;
+end architecture;
+
+------------------------- Change State Block --------------------------------------------------

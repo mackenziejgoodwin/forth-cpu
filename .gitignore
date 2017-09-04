@@ -5,6 +5,7 @@
 *_bitgen.xwbt
 *.bld
 *.blk
+block
 *.cmd_log
 core
 design.bit
@@ -83,6 +84,7 @@ tb
 test_bench
 text
 text.bin
+text.hex
 tmp/
 tmp/*
 top_level.bld

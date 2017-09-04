@@ -21,8 +21,6 @@
 --  See https://eewiki.net/pages/viewpage.action?pageId=28279002
 --
 --  @note This file has been renamed and updated from the original.
---  @todo Move more of the components in top.vhd that deal with the
---  interface into this component and add an asynchronous reset.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -61,7 +59,112 @@ package kbd_pkg is
 			result: out std_logic := '0'); --debounced signal
 	end component;
 
+	component keyboard is
+		generic(
+			clock_frequency:           integer := 50000000; -- system clock frequency in hz
+			ps2_debounce_counter_size: integer := 8);       -- set such that 2^size/clock_frequency = 5us (size = 8 for 50mhz)
+		port(
+			clk:              in  std_logic;        -- system clock input
+			rst:              in  std_logic;        -- system reset
+
+			ps2_clk:          in  std_logic;        -- clock signal from PS2 keyboard
+			ps2_data:         in  std_logic;        -- data signal from PS2 keyboard
+
+			kbd_char_re:      in  std_logic;        -- acknowledge kbd_char_buf_new
+			kbd_char_buf_new: out std_logic := '0'; -- output flag indicating new ascii value
+			kbd_char_buf:     out std_logic_vector(6 downto 0)); -- ASCII value
+	end component;
 end package;
+
+------ Keyboard ----------------------------------------------------------------
+library ieee;
+use ieee.std_logic_1164.all;
+use work.kbd_pkg.all;
+
+entity keyboard is
+	generic(
+		clock_frequency:           integer := 50000000; -- system clock frequency in hz
+		ps2_debounce_counter_size: integer := 8);       -- set such that 2^size/clock_frequency = 5us (size = 8 for 50mhz)
+	port(
+		clk:              in  std_logic;        -- system clock input
+		rst:              in  std_logic;        -- system reset
+
+		ps2_clk:          in  std_logic;        -- clock signal from PS2 keyboard
+		ps2_data:         in  std_logic;        -- data signal from PS2 keyboard
+
+		kbd_char_re:      in  std_logic;        -- acknowledge kbd_char_buf_new
+		kbd_char_buf_new: out std_logic := '0'; -- output flag indicating new ascii value
+		kbd_char_buf:     out std_logic_vector(6 downto 0)); -- ASCII value
+end entity;
+
+architecture rtl of keyboard  is
+	signal kbd_new_c, kbd_new_n:  std_logic := '0';
+	signal kbd_new_edge: std_logic := '0';
+	signal kbd_new:      std_logic := '0';                                -- new ASCII char available
+	signal kbd_char:     std_logic_vector(kbd_char_buf'range) := (others => '0'); -- ASCII char
+	signal kbd_char_o:   std_logic_vector(kbd_char_buf'range) := (others => '0'); -- ASCII char
+begin
+	kbd_char_buf_new <= kbd_new_c;
+
+	ps2_next: process(clk, rst)
+	begin
+		if rst = '1' then
+			kbd_new_c  <= '0';
+		elsif rising_edge(clk) then
+			kbd_new_c   <= kbd_new_n;
+		end if;
+	end process;
+
+	new_char: entity work.reg
+	generic map(N => kbd_char'high+1)
+	port map(
+		clk => clk,
+		rst => rst,
+		di  => kbd_char,
+		we  => kbd_new_edge,
+		do  => kbd_char_o);
+
+	char_buf: entity work.reg
+	generic map(N => kbd_char'high+1)
+	port map(
+		clk => clk,
+		rst => rst,
+		di  => kbd_char_o,
+		we  => kbd_char_re,
+		do  => kbd_char_buf);
+
+	ps2_proc: process(kbd_new_edge, kbd_new_c, kbd_char_re)
+	begin
+		if kbd_new_edge = '1' then
+			kbd_new_n  <= '1';
+		elsif kbd_char_re = '1' then
+			kbd_new_n  <= '0';
+		else
+			kbd_new_n  <= kbd_new_c;
+		end if;
+	end process;
+
+	-- Process a kbd_new into a single edge for the rest of the
+	-- system.
+	ps2_edge_new_character_0: entity work.edge
+	port map(
+		clk    => clk,
+		rst    => rst,
+		sin    => kbd_new,
+		output => kbd_new_edge);
+
+	ps2_0: work.kbd_pkg.ps2_kbd_top
+	generic map(
+		clock_frequency => clock_frequency,
+		ps2_debounce_counter_size => ps2_debounce_counter_size)
+	port map(
+		clk        => clk,
+		ps2_clk    => ps2_clk,
+		ps2_data   => ps2_data,
+		ascii_new  => kbd_new,
+		ascii_code => kbd_char);
+end architecture;
+------ Keyboard ----------------------------------------------------------------
 
 ------ PS2 KBD TOP -------------------------------------------------------------
 
@@ -483,7 +586,6 @@ end;
 --
 -- @note This file has been modified from the original one found
 -- on the web from: <https://eewiki.net/pages/viewpage.action?pageId=28279002>
--- @todo make a module that accepts an array std_logic_vector to be debounced.
 --
 --------------------------------------------------------------------------------
 

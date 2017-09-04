@@ -7,14 +7,25 @@
 #include <stdio.h>
 
 /**@note STK_SIZE is fixed to 64, but h2.vhd allows for the instantiation of
- * CPUs with different stack sizes (so long as they are a power of 2) */
+ * CPUs with different stack sizes, within reasonable limits, so long as they
+ * are a power of 2. */
 
 #define MAX_CORE             (8192u)
 #define STK_SIZE             (64u)
 #define START_ADDR           (0u)
 
+#ifndef H2_CPU_ID_SIMULATION
+#ifdef NO_MAIN
+#define H2_CPU_ID_SIMULATION (0xD1ED)
+#else
 #define H2_CPU_ID_SIMULATION (0xDEADu)
+#endif
+#endif
+
 #define H2_CPU_ID_VHDL       (0xCAFEu)
+
+#define VGA_INIT_FILE        ("text.hex")  /**< default name for VGA screen */
+#define FLASH_INIT_FILE      ("nvram.blk") /**< default file for flash initialization */
 
 typedef struct {
 	size_t length;
@@ -31,7 +42,7 @@ typedef struct {
 	uint16_t sp;  /**< variable stack pointer */
 	bool     ie;  /**< interrupt enable */
 
-	break_point_t bp;
+	break_point_t bp; /**< list of break points */
 	uint16_t rpm; /**< maximum value of rp ever encountered */
 	uint16_t spm; /**< maximum value of sp ever encountered */
 } h2_t; /**< state of the H2 CPU */
@@ -47,13 +58,13 @@ typedef struct {
 	symbol_type_e type;
 	char *id;
 	uint16_t value;
+	bool hidden;
 } symbol_t;
 
 typedef struct {
 	size_t length;
 	symbol_t **symbols;
 } symbol_table_t;
-
 
 #define CLOCK_SPEED_HZ             (100000000ULL)
 
@@ -108,38 +119,111 @@ typedef struct {
 #define PS2_NEW_CHAR               (1 << PS2_NEW_CHAR_BIT)
 
 #define CHIP_MEMORY_SIZE           (16*1024*1024)
-#define PCM_MASK_ADDR_UPPER_MASK   (0x3ff)
+#define FLASH_MASK_ADDR_UPPER_MASK (0x1ff)
 
-#define PCM_MEMORY_OE_BIT          (14)
-#define PCM_MEMORY_WE_BIT          (15)
+#define FLASH_CHIP_SELECT_BIT      (10)
+#define SRAM_CHIP_SELECT_BIT       (11)
+#define FLASH_MEMORY_WAIT_BIT      (12)
+#define FLASH_MEMORY_RESET_BIT     (13)
+#define FLASH_MEMORY_OE_BIT        (14)
+#define FLASH_MEMORY_WE_BIT        (15)
 
-#define PCM_MEMORY_OE              (1 << PCM_MEMORY_OE_BIT)
-#define PCM_MEMORY_WE              (1 << PCM_MEMORY_WE_BIT)
+#define FLASH_CHIP_SELECT          (1 << FLASH_CHIP_SELECT_BIT)
+#define SRAM_CHIP_SELECT           (1 << SRAM_CHIP_SELECT_BIT)
+#define FLASH_MEMORY_WAIT          (1 << FLASH_MEMORY_WAIT_BIT)
+#define FLASH_MEMORY_RESET         (1 << FLASH_MEMORY_RESET_BIT)
+#define FLASH_MEMORY_OE            (1 << FLASH_MEMORY_OE_BIT)
+#define FLASH_MEMORY_WE            (1 << FLASH_MEMORY_WE_BIT)
+
+#define FLASH_BLOCK_MAX            (130)
+
+typedef enum {
+	FLASH_UNLOCKED,
+	FLASH_LOCKED,
+	FLASH_LOCKED_DOWN,
+} flash_lock_t;
+
+typedef struct {
+	unsigned cycle;
+	unsigned mode;
+	unsigned we;
+	unsigned cs;
+	uint8_t  status;
+	uint32_t arg1_address, arg2_address;
+	uint16_t data;
+	uint16_t nvram[CHIP_MEMORY_SIZE];
+	uint8_t  locks[FLASH_BLOCK_MAX];
+} flash_t;
+
+typedef enum { /**@warning do not change the order or insert elements */
+	BLACK,
+	RED,
+	GREEN,
+	YELLOW,
+	BLUE,
+	MAGENTA,
+	CYAN,
+	WHITE,
+} color_t;
+
+typedef enum {
+	TERMINAL_NORMAL_MODE,
+	TERMINAL_CSI,
+	TERMINAL_COMMAND,
+	TERMINAL_NUMBER_1,
+	TERMINAL_NUMBER_2,
+	TERMINAL_DECTCEM,
+	TERMINAL_STATE_END,
+} terminal_state_t;
+
+typedef struct {
+	unsigned bold:          1;
+	unsigned under_score:   1;
+	unsigned blink:         1;
+	unsigned reverse_video: 1;
+	unsigned conceal:       1;
+	unsigned foreground_color: 3;
+	unsigned background_color: 3;
+} vt100_attribute_t;
+
+#define VT100_MAX_SIZE (8192)
+
+typedef struct {
+	size_t cursor;
+	size_t cursor_saved;
+	unsigned n1, n2;
+	unsigned height;
+	unsigned width;
+	unsigned size;
+	terminal_state_t state;
+	bool blinks;
+	bool cursor_on;
+	vt100_attribute_t attribute;
+	vt100_attribute_t attributes[VT100_MAX_SIZE];
+	uint8_t m[VT100_MAX_SIZE];
+	uint8_t command_index;
+} vt100_t;
 
 typedef struct {
 	uint8_t leds;
-	uint16_t vga_cursor;
-	uint16_t vga_control;
-	uint16_t vga[VGA_BUFFER_LENGTH];
+	vt100_t vt100;
 
 	uint16_t timer_control;
 	uint16_t timer;
 
 	uint16_t irc_mask;
 
-	uint8_t uart_getchar_register;
+	uint8_t uart_getchar_register, ps2_getchar_register;
 
-	uint16_t led_8_segments;
+	uint16_t led_7_segments;
 
 	uint8_t switches;
 
-	uint16_t lfsr;
-
-	uint16_t nvram[CHIP_MEMORY_SIZE];
-	uint16_t vram[CHIP_MEMORY_SIZE];
+	uint16_t vram[CHIP_MEMORY_SIZE]; /**@todo move to SRAM peripheral */
 	uint16_t mem_control;
 	uint16_t mem_addr_low;
 	uint16_t mem_dout;
+	flash_t flash;
 
 	bool wait;
 	bool interrupt;
@@ -159,27 +243,22 @@ typedef struct {
 
 typedef enum {
 	iUart         = 0x4000,
-	iSwitches     = 0x4001,
-	iTimerCtrl    = 0x4002,
-	iTimerDin     = 0x4003,
-	iVgaTxtDout   = 0x4004,
-	iPs2          = 0x4005,
-	iLfsr         = 0x4006,
-	iMemDin       = 0x4007,
+	iVT100        = 0x4002,
+	iTimerDin     = 0x4004,
+	iSwitches     = 0x4006,
+	iMemDin       = 0x4008,
 } h2_input_addr_t;
 
 typedef enum {
 	oUart         = 0x4000,
-	oLeds         = 0x4001,
-	oTimerCtrl    = 0x4002,
-	oVgaCursor    = 0x4003,
-	oVgaCtrl      = 0x4004,
-	o8SegLED      = 0x4005,
-	oIrcMask      = 0x4006,
-	oLfsr         = 0x4007,
-	oMemControl   = 0x4008,
-	oMemAddrLow   = 0x4009,
-	oMemDout      = 0x400A,
+	oVT100        = 0x4002,
+	oTimerCtrl    = 0x4004,
+	oLeds         = 0x4006,
+	oMemDout      = 0x4008,
+	oMemControl   = 0x400A,
+	oMemAddrLow   = 0x400C,
+	o7SegLED      = 0x400E,
+	oIrcMask      = 0x4010,
 } h2_output_addr_t;
 
 typedef enum {
@@ -202,7 +281,8 @@ int h2_load(h2_t *h, FILE *hexfile);
 int h2_save(h2_t *h, FILE *output, bool full);
 int h2_run(h2_t *h, h2_io_t *io, FILE *output, unsigned steps, symbol_table_t *symbols, bool run_debugger);
 
-void soc_print(FILE *out, h2_soc_state_t *soc, bool verbose);
+uint16_t h2_io_memory_read_operation(h2_soc_state_t *soc);
+void soc_print(FILE *out, h2_soc_state_t *soc);
 h2_soc_state_t *h2_soc_state_new(void);
 void h2_soc_state_free(h2_soc_state_t *soc);
 h2_io_t *h2_io_new(void);
@@ -254,5 +334,12 @@ int logger(log_level_e level, const char *func,
 
 int memory_load(FILE *input, uint16_t *p, size_t length);
 int memory_save(FILE *output, uint16_t *p, size_t length);
+
+#define BACKSPACE (8)
+#define ESCAPE    (27)
+#define DELETE    (127)  /* ASCII delete */
+
+void vt100_update(vt100_t *t, uint8_t c);
+
 
 #endif

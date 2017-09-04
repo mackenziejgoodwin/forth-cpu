@@ -7,8 +7,12 @@
  * a simulator, a disassembler and a debugger. The H2 is written in VHDL and
  * is based on the J1 processor (see http://excamera.com/sphinx/fpga-j1.html).
  *
- * The processor has been tested on an FPGA and is working. 
- * The project can be found at: https://github.com/howerj/forth-cpu */
+ * The processor has been tested on an FPGA and is working.
+ * The project can be found at: https://github.com/howerj/forth-cpu
+ *
+ * @todo Make 'hidden' apply to variables, and do the same for constants,
+ * removing the need for 'location'.
+ * @todo Fix FIFO implementation when it comes to edge cases */
 
 /* ========================== Preamble: Types, Macros, Globals ============= */
 
@@ -28,9 +32,7 @@
 extern int _fileno(FILE *stream);
 #endif
 
-static const char *nvram_file = "nvram.blk";
-
-#define DEFAULT_STEPS (512)
+#define DEFAULT_STEPS (0) /*default is to run forever*/
 #define MAX(X, Y)     ((X) > (Y) ? (X) : (Y))
 #define MIN(X, Y)     ((X) > (Y) ? (Y) : (X))
 
@@ -113,41 +115,41 @@ typedef enum {
  * their T_TO_R bit set in their instruction description tables, this
  * appears to be incorrect */
 #define X_MACRO_INSTRUCTIONS \
-	X(DUP,    "dup",    (OP_ALU_OP | MK_CODE(ALU_OP_T)        | T_TO_N  | MK_DSTACK(DELTA_1)))\
-	X(OVER,   "over",   (OP_ALU_OP | MK_CODE(ALU_OP_N)        | T_TO_N  | MK_DSTACK(DELTA_1)))\
-	X(INVERT, "invert", (OP_ALU_OP | MK_CODE(ALU_OP_T_INVERT)))\
-	X(ADD,    "+",      (OP_ALU_OP | MK_CODE(ALU_OP_T_PLUS_N)               | MK_DSTACK(DELTA_N1)))\
-	X(SWAP,   "swap",   (OP_ALU_OP | MK_CODE(ALU_OP_N)        | T_TO_N))\
-	X(NIP,    "nip",    (OP_ALU_OP | MK_CODE(ALU_OP_T)                      | MK_DSTACK(DELTA_N1)))\
-	X(DROP,   "drop",   (OP_ALU_OP | MK_CODE(ALU_OP_N)                      | MK_DSTACK(DELTA_N1)))\
-	X(EXIT,   "exit",   (OP_ALU_OP | MK_CODE(ALU_OP_T)        | R_TO_PC | MK_RSTACK(DELTA_N1)))\
-	X(TOR,    ">r",     (OP_ALU_OP | MK_CODE(ALU_OP_N)        | T_TO_R  | MK_DSTACK(DELTA_N1) | MK_RSTACK(DELTA_1)))\
-	X(FROMR,  "r>",     (OP_ALU_OP | MK_CODE(ALU_OP_R)        | T_TO_N  | MK_DSTACK(DELTA_1)  | MK_RSTACK(DELTA_N1)))\
-	X(RAT,    "r@",     (OP_ALU_OP | MK_CODE(ALU_OP_R)        | T_TO_N  | MK_DSTACK(DELTA_1)))\
-	X(LOAD,   "@",      (OP_ALU_OP | MK_CODE(ALU_OP_T_LOAD)))\
-	X(STORE,  "store",  (OP_ALU_OP | MK_CODE(ALU_OP_N)        | N_TO_ADDR_T | MK_DSTACK(DELTA_N1)))\
-	X(RSHIFT, "rshift", (OP_ALU_OP | MK_CODE(ALU_OP_N_RSHIFT_T)             | MK_DSTACK(DELTA_N1)))\
-	X(LSHIFT, "lshift", (OP_ALU_OP | MK_CODE(ALU_OP_N_LSHIFT_T)             | MK_DSTACK(DELTA_N1)))\
-	X(EQUAL,  "=",      (OP_ALU_OP | MK_CODE(ALU_OP_T_EQUAL_N)              | MK_DSTACK(DELTA_N1)))\
-	X(ULESS,  "u<",     (OP_ALU_OP | MK_CODE(ALU_OP_N_ULESS_T)              | MK_DSTACK(DELTA_N1)))\
-	X(LESS,   "<",      (OP_ALU_OP | MK_CODE(ALU_OP_N_LESS_T)               | MK_DSTACK(DELTA_N1)))\
-	X(AND,    "and",    (OP_ALU_OP | MK_CODE(ALU_OP_T_AND_N)                | MK_DSTACK(DELTA_N1)))\
-	X(XOR,    "xor",    (OP_ALU_OP | MK_CODE(ALU_OP_T_XOR_N)                | MK_DSTACK(DELTA_N1)))\
-	X(OR,     "or",     (OP_ALU_OP | MK_CODE(ALU_OP_T_OR_N)                 | MK_DSTACK(DELTA_N1)))\
-	X(DEPTH,  "sp@",    (OP_ALU_OP | MK_CODE(ALU_OP_DEPTH)   | T_TO_N       | MK_DSTACK(DELTA_1)))\
-	X(T_N1,   "1-",     (OP_ALU_OP | MK_CODE(ALU_OP_T_DECREMENT)))\
-	X(IEN,    "seti",   (OP_ALU_OP | MK_CODE(ALU_OP_ENABLE_INTERRUPTS)      | MK_DSTACK(DELTA_N1)))\
-	X(ISIEN,  "iset?",  (OP_ALU_OP | MK_CODE(ALU_OP_INTERRUPTS_ENABLED)     | MK_DSTACK(DELTA_1)))\
-	X(RDEPTH, "rp@",    (OP_ALU_OP | MK_CODE(ALU_OP_RDEPTH)  | T_TO_N       | MK_DSTACK(DELTA_1)))\
-	X(TE0,    "0=",     (OP_ALU_OP | MK_CODE(ALU_OP_T_EQUAL_0)))\
-	X(UP1,    "up1",    (OP_ALU_OP | MK_CODE(ALU_OP_T) | MK_DSTACK(DELTA_1)))\
-	X(NOP,    "nop",    (OP_ALU_OP | MK_CODE(ALU_OP_T)))\
-	X(CPU_ID, "cpu-id", (OP_ALU_OP | MK_CODE(ALU_OP_CPU_ID))                | MK_DSTACK(DELTA_1))\
-	X(RDROP,  "rdrop",  (OP_ALU_OP | MK_CODE(ALU_OP_T) | MK_RSTACK(DELTA_N1)))
+	X(DUP,    "dup",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_T)        | T_TO_N  | MK_DSTACK(DELTA_1)))\
+	X(OVER,   "over",   true,  (OP_ALU_OP | MK_CODE(ALU_OP_N)        | T_TO_N  | MK_DSTACK(DELTA_1)))\
+	X(INVERT, "invert", true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_INVERT)))\
+	X(ADD,    "+",      true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_PLUS_N)               | MK_DSTACK(DELTA_N1)))\
+	X(SWAP,   "swap",   true,  (OP_ALU_OP | MK_CODE(ALU_OP_N)        | T_TO_N))\
+	X(NIP,    "nip",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_T)                      | MK_DSTACK(DELTA_N1)))\
+	X(DROP,   "drop",   true,  (OP_ALU_OP | MK_CODE(ALU_OP_N)                      | MK_DSTACK(DELTA_N1)))\
+	X(EXIT,   "exit",   true,  (OP_ALU_OP | MK_CODE(ALU_OP_T)        | R_TO_PC | MK_RSTACK(DELTA_N1)))\
+	X(TOR,    ">r",     true,  (OP_ALU_OP | MK_CODE(ALU_OP_N)        | T_TO_R  | MK_DSTACK(DELTA_N1) | MK_RSTACK(DELTA_1)))\
+	X(FROMR,  "r>",     true,  (OP_ALU_OP | MK_CODE(ALU_OP_R)        | T_TO_N  | MK_DSTACK(DELTA_1)  | MK_RSTACK(DELTA_N1)))\
+	X(RAT,    "r@",     true,  (OP_ALU_OP | MK_CODE(ALU_OP_R)        | T_TO_N  | MK_DSTACK(DELTA_1)))\
+	X(LOAD,   "@",      true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_LOAD)))\
+	X(STORE,  "store",  true,  (OP_ALU_OP | MK_CODE(ALU_OP_N)        | N_TO_ADDR_T | MK_DSTACK(DELTA_N1)))\
+	X(RSHIFT, "rshift", true,  (OP_ALU_OP | MK_CODE(ALU_OP_N_RSHIFT_T)             | MK_DSTACK(DELTA_N1)))\
+	X(LSHIFT, "lshift", true,  (OP_ALU_OP | MK_CODE(ALU_OP_N_LSHIFT_T)             | MK_DSTACK(DELTA_N1)))\
+	X(EQUAL,  "=",      true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_EQUAL_N)              | MK_DSTACK(DELTA_N1)))\
+	X(ULESS,  "u<",     true,  (OP_ALU_OP | MK_CODE(ALU_OP_N_ULESS_T)              | MK_DSTACK(DELTA_N1)))\
+	X(LESS,   "<",      true,  (OP_ALU_OP | MK_CODE(ALU_OP_N_LESS_T)               | MK_DSTACK(DELTA_N1)))\
+	X(AND,    "and",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_AND_N)                | MK_DSTACK(DELTA_N1)))\
+	X(XOR,    "xor",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_XOR_N)                | MK_DSTACK(DELTA_N1)))\
+	X(OR,     "or",     true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_OR_N)                 | MK_DSTACK(DELTA_N1)))\
+	X(DEPTH,  "sp@",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_DEPTH)   | T_TO_N       | MK_DSTACK(DELTA_1)))\
+	X(T_N1,   "1-",     true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_DECREMENT)))\
+	X(IEN,    "ien",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_ENABLE_INTERRUPTS)     /* | MK_DSTACK(DELTA_N1) */))\
+	X(ISIEN,  "ien?",   true,  (OP_ALU_OP | MK_CODE(ALU_OP_INTERRUPTS_ENABLED) | T_TO_N  | MK_DSTACK(DELTA_1)))\
+	X(RDEPTH, "rp@",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_RDEPTH)  | T_TO_N       | MK_DSTACK(DELTA_1)))\
+	X(TE0,    "0=",     true,  (OP_ALU_OP | MK_CODE(ALU_OP_T_EQUAL_0)))\
+	X(NOP,    "nop",    true,  (OP_ALU_OP | MK_CODE(ALU_OP_T)))\
+	X(CPU_ID, "cpu-id", true,  (OP_ALU_OP | MK_CODE(ALU_OP_CPU_ID))                | MK_DSTACK(DELTA_1))\
+	X(RUP,    "rup",    false, (OP_ALU_OP | MK_CODE(ALU_OP_T))                     | MK_RSTACK(DELTA_1))\
+	X(RDROP,  "rdrop",  true,  (OP_ALU_OP | MK_CODE(ALU_OP_T) | MK_RSTACK(DELTA_N1)))
 
 
 typedef enum {
-#define X(NAME, STRING, INSTRUCTION) CODE_ ## NAME = INSTRUCTION,
+#define X(NAME, STRING, DEFINE, INSTRUCTION) CODE_ ## NAME = INSTRUCTION,
 	X_MACRO_INSTRUCTIONS
 #undef X
 } forth_word_codes_e;
@@ -431,10 +433,6 @@ size_t fifo_pop(fifo_t * fifo, fifo_data_t * data)
 	return 1;
 }
 
-#define CHAR_BACKSPACE (8)    /* ASCII backspace */
-#define CHAR_ESCAPE    (27)   /* ASCII escape character value */
-#define CHAR_DELETE    (127)  /* ASCII delete */
-
 #ifdef __unix__
 #include <unistd.h>
 #include <termios.h>
@@ -485,16 +483,13 @@ static int wrap_getch(bool *debug_on)
 	int ch = getch();
 	assert(debug_on);
 	if(ch == EOF) {
-		note("End Of Input - exiting", CHAR_ESCAPE);
+		note("End Of Input - exiting", ESCAPE);
 		exit(EXIT_SUCCESS);
 	}
-	/**@bug Escape is sent to the I/O process if all we intend to do it
-	 * exit back to the debugger, perhaps C signals should be used
-	 * instead */
-	if(ch == CHAR_ESCAPE && debug_on)
+	if(ch == ESCAPE && debug_on)
 		*debug_on = true;
 
-	return ch == CHAR_DELETE ? CHAR_BACKSPACE : ch;
+	return ch == DELETE ? BACKSPACE : ch;
 }
 
 /* ========================== Utilities ==================================== */
@@ -546,8 +541,6 @@ static void symbol_table_free(symbol_table_t *t)
 	free(t);
 }
 
-/**@note If this becomes too slow, the first optimization would be
- * to use a frequency sorted list */
 static symbol_t *symbol_table_lookup(symbol_table_t *t, const char *id)
 {
 	for(size_t i = 0; i < t->length; i++)
@@ -565,7 +558,7 @@ static symbol_t *symbol_table_reverse_lookup(symbol_table_t *t, symbol_type_e ty
 	return NULL;
 }
 
-static int symbol_table_add(symbol_table_t *t, symbol_type_e type, const char *id, uint16_t value, error_t *e)
+static int symbol_table_add(symbol_table_t *t, symbol_type_e type, const char *id, uint16_t value, error_t *e, bool hidden)
 {
 	symbol_t *s = symbol_new(type, id, value);
 	symbol_t **xs = NULL;
@@ -578,6 +571,7 @@ static int symbol_table_add(symbol_table_t *t, symbol_type_e type, const char *i
 		else
 			return -1;
 	}
+	s->hidden = hidden;
 
 	t->length++;
 	errno = 0;
@@ -595,36 +589,47 @@ static int symbol_table_print(symbol_table_t *t, FILE *output)
 	assert(t);
 	for(size_t i = 0; i < t->length; i++) {
 		symbol_t *s = t->symbols[i];
-		if(fprintf(output, "%s %s %"PRId16"\n", symbol_names[s->type], s->id, s->value) < 0)
+		char *visibility = s->hidden ? "hidden" : "visible";
+		if(fprintf(output, "%s %s %"PRId16" %s\n", symbol_names[s->type], s->id, s->value, visibility) < 0)
 			return -1;
 	}
 	return 0;
 }
 
-static symbol_table_t *symbol_table_load(FILE *input)
+symbol_table_t *symbol_table_load(FILE *input)
 {
 	symbol_table_t *t = symbol_table_new();
 	assert(input);
 	char symbol[80];
 	char id[256];
+	char visibility[80];
 	uint16_t value;
 
 	while(!feof(input)) {
 		int r = 0;
-		memset(symbol, 0, sizeof(symbol));
-		memset(id,     0, sizeof(id));
+		memset(symbol,     0, sizeof(symbol));
+		memset(id,         0, sizeof(id));
+		memset(visibility, 0, sizeof(visibility));
 		value = 0;
-		r = fscanf(input, "%79s%255s%"SCNd16, symbol, id, &value);
-		if(r != 3 && r > 0) {
+		r = fscanf(input, "%79s%255s%"SCNd16"%79s", symbol, id, &value, visibility);
+		if(r != 4 && r > 0) {
 			error("invalid symbol table: %d", r);
 			goto fail;
 		}
-		if(r == 3) {
+		if(r == 4) {
 			size_t i = 0;
+			bool hidden = false;
+			if(!strcmp(visibility, "hidden")) {
+				hidden = true;
+			}else if(!strcmp(visibility, "visible")) {
+				error("invalid visibility value: %s", visibility);
+				goto fail;
+			}
+
 			for(i = 0; symbol_names[i] && strcmp(symbol_names[i], symbol); i++)
 				/*do nothing*/;
 			if(symbol_names[i]) {
-				if(symbol_table_add(t, i, id, value, NULL) < 0)
+				if(symbol_table_add(t, i, id, value, NULL, hidden) < 0)
 					goto fail;
 			} else {
 				error("invalid symbol: %s", symbol);
@@ -646,7 +651,7 @@ fail:
 static const char *instruction_to_string(uint16_t i)
 {
 	switch(i) {
-#define X(NAME, STRING, INSTRUCTION) case CODE_ ## NAME : return STRING ;
+#define X(NAME, STRING, DEFINE, INSTRUCTION) case CODE_ ## NAME : return STRING ;
 	X_MACRO_INSTRUCTIONS
 #undef X
 	default:          break;
@@ -673,8 +678,8 @@ static const char *alu_op_to_string(uint16_t instruction)
 	case ALU_OP_N_LSHIFT_T:         return "N<<T";
 	case ALU_OP_DEPTH:              return "depth";
 	case ALU_OP_N_ULESS_T:          return "Tu>N";
-	case ALU_OP_ENABLE_INTERRUPTS:  return "seti";
-	case ALU_OP_INTERRUPTS_ENABLED: return "iset?";
+	case ALU_OP_ENABLE_INTERRUPTS:  return "ien";
+	case ALU_OP_INTERRUPTS_ENABLED: return "ien?";
 	case ALU_OP_RDEPTH:             return "rdepth";
 	case ALU_OP_T_EQUAL_0:          return "0=";
 	case ALU_OP_CPU_ID:             return "cpu-id";
@@ -833,61 +838,668 @@ static int break_point_print(FILE *out, break_point_t *bp)
 	return 0;
 }
 
-#define LED_8_SEGMENT_DISPLAY_CHARSET_HEX  "0123456789AbCdEF"
-#define LED_8_SEGMENT_DISPLAY_CHARSET_BCD  "0123456789 .-   "
+#define LED_7_SEGMENT_DISPLAY_CHARSET_HEX  "0123456789AbCdEF"
+#define LED_7_SEGMENT_DISPLAY_CHARSET_BCD  "0123456789 .-   "
 
-static char l8seg(uint8_t c)
+static char l7seg(uint8_t c)
 {
-	static const char *v = LED_8_SEGMENT_DISPLAY_CHARSET_HEX;
+	static const char *v = LED_7_SEGMENT_DISPLAY_CHARSET_HEX;
 	return v[c & 0xf];
 }
 
-void soc_print(FILE *out, h2_soc_state_t *soc, bool verbose)
+void soc_print(FILE *out, h2_soc_state_t *soc)
 {
 	assert(out);
 	assert(soc);
-	unsigned char led0 = l8seg(soc->led_8_segments >> 12);
-	unsigned char led1 = l8seg(soc->led_8_segments >>  8);
-	unsigned char led2 = l8seg(soc->led_8_segments >>  4);
-	unsigned char led3 = l8seg(soc->led_8_segments);
+	unsigned char led0 = l7seg(soc->led_7_segments >> 12);
+	unsigned char led1 = l7seg(soc->led_7_segments >>  8);
+	unsigned char led2 = l7seg(soc->led_7_segments >>  4);
+	unsigned char led3 = l7seg(soc->led_7_segments);
 
-	fprintf(out, "LEDS:          %02"PRIx8"\n",  soc->leds);
-	fprintf(out, "VGA Cursor:    %04"PRIx16"\n", soc->vga_cursor);
-	fprintf(out, "VGA Control:   %04"PRIx16"\n", soc->vga_control);
-	fprintf(out, "Timer Control: %04"PRIx16"\n", soc->timer_control);
-	fprintf(out, "Timer:         %04"PRIx16"\n", soc->timer);
-	fprintf(out, "IRC Mask:      %04"PRIx16"\n", soc->irc_mask);
-	fprintf(out, "UART Input:    %02"PRIx8"\n",  soc->uart_getchar_register);
-	fprintf(out, "LED 7seg:      %c%c%c%c\n",    led0, led1, led2, led3);
-	fprintf(out, "Switches:      %02"PRIx8"\n",  soc->switches);
-	fprintf(out, "LFSR:          %04"PRIx16"\n", soc->lfsr);
-	fprintf(out, "Waiting:       %s\n",          soc->wait ? "true" : "false");
+	fprintf(out, "LEDS:           %02"PRIx8"\n",  soc->leds);
+	/*fprintf(out, "VGA Cursor:     %04"PRIx16"\n", soc->vga_cursor);
+	fprintf(out, "VGA Control:    %04"PRIx16"\n", soc->vga_control);*/
+	fprintf(out, "Timer Control:  %04"PRIx16"\n", soc->timer_control);
+	fprintf(out, "Timer:          %04"PRIx16"\n", soc->timer);
+	fprintf(out, "IRC Mask:       %04"PRIx16"\n", soc->irc_mask);
+	fprintf(out, "UART Input:     %02"PRIx8"\n",  soc->uart_getchar_register);
+	fprintf(out, "LED 7 segment:  %c%c%c%c\n",    led0, led1, led2, led3);
+	fprintf(out, "Switches:       %02"PRIx8"\n",  soc->switches);
+	fprintf(out, "Waiting:        %s\n",          soc->wait ? "true" : "false");
+}
 
-	if(verbose) {
-		fputs("VGA Memory:\n", out);
-		memory_print(out, 0, soc->vga, VGA_BUFFER_LENGTH, true);
+static void terminal_default_command_sequence(vt100_t *t)
+{
+	assert(t);
+	t->n1 = 1;
+	t->n2 = 1;
+	t->command_index = 0;
+}
+
+static void terminal_at_xy(vt100_t *t, unsigned x, unsigned y, bool limit_not_wrap)
+{
+	assert(t);
+	if(limit_not_wrap) {
+		x = MAX(x, 0);
+		y = MAX(y, 0);
+		x = MIN(x, t->width - 1);
+		y = MIN(y, t->height - 1);
+	} else {
+		x %= t->width;
+		y %= t->height;
 	}
+	t->cursor = (y * t->width) + x;
+}
+
+static int terminal_x_current(vt100_t *t)
+{
+	assert(t);
+	return t->cursor % t->width;
+}
+
+static int terminal_y_current(vt100_t *t)
+{
+	assert(t);
+	return t->cursor / t->width;
+}
+
+static void terminal_at_xy_relative(vt100_t *t, int x, int y, bool limit_not_wrap)
+{
+	assert(t);
+	int x_current = terminal_x_current(t);
+	int y_current = terminal_y_current(t);
+	terminal_at_xy(t, x_current + x, y_current + y, limit_not_wrap);
+}
+
+static void terminal_parse_attribute(vt100_attribute_t *a, unsigned v)
+{
+	switch(v) {
+	case 0:
+		memset(a, 0, sizeof(*a));
+		a->foreground_color = WHITE;
+		a->background_color = BLACK;
+		return;
+	case 1: a->bold          = true; return;
+	case 4: a->under_score   = true; return;
+	case 5: a->blink         = true; return;
+	case 7: a->reverse_video = true; return;
+	case 8: a->conceal       = true; return;
+	default:
+		if(v >= 30 && v <= 37)
+			a->foreground_color = v - 30;
+		if(v >= 40 && v <= 47)
+			a->background_color = v - 40;
+	}
+}
+
+static int terminal_escape_sequences(vt100_t *t, uint8_t c)
+{
+	assert(t);
+	assert(t->state != TERMINAL_NORMAL_MODE);
+	switch(t->state) {
+	case TERMINAL_CSI:
+		if(c == '[')
+			t->state = TERMINAL_COMMAND;
+		else
+			goto fail;
+		break;
+	case TERMINAL_COMMAND:
+		switch(c) {
+		case 's':
+			t->cursor_saved = t->cursor;
+			goto success;
+		case 'n':
+			t->cursor = t->cursor_saved;
+			goto success;
+		case '?':
+			terminal_default_command_sequence(t);
+			t->state = TERMINAL_DECTCEM;
+			break;
+		case ';':
+			terminal_default_command_sequence(t);
+			t->state = TERMINAL_NUMBER_2;
+			break;
+		default:
+			if(isdigit(c)) {
+				terminal_default_command_sequence(t);
+				t->command_index++;
+				t->n1 = c - '0';
+				t->state = TERMINAL_NUMBER_1;
+			} else {
+				goto fail;
+			}
+		}
+		break;
+	case TERMINAL_NUMBER_1:
+		if(isdigit(c)) {
+			if(t->command_index > 3)
+				goto fail;
+			t->n1 = (t->n1 * (t->command_index ? 10 : 0)) + (c - '0');
+			t->command_index++;
+			break;
+		}
+
+		switch(c) {
+		case 'A': terminal_at_xy_relative(t,  0,     -t->n1, true); goto success;/* relative cursor up */
+		case 'B': terminal_at_xy_relative(t,  0,      t->n1, true); goto success;/* relative cursor down */
+		case 'C': terminal_at_xy_relative(t,  t->n1,  0,     true); goto success;/* relative cursor forward */
+		case 'D': terminal_at_xy_relative(t, -t->n1,  0,     true); goto success;/* relative cursor back */
+		case 'E': terminal_at_xy(t, 0,  t->n1, false); goto success; /* relative cursor down, beginning of line */
+		case 'F': terminal_at_xy(t, 0, -t->n1, false); goto success; /* relative cursor up, beginning of line */
+		case 'G': terminal_at_xy(t, t->n1, terminal_y_current(t), true); goto success; /* move the cursor to column n */
+		case 'm': /* set attribute, CSI number m */
+			terminal_parse_attribute(&t->attribute, t->n1);
+			t->attributes[t->cursor] = t->attribute;
+			goto success;
+		case 'i': /* AUX Port On == 5, AUX Port Off == 4 */
+			if(t->n1 == 5 || t->n1 == 4)
+				goto success;
+			goto fail;
+		case 'n': /* Device Status Report */
+			/** @note This should transmit to the H2 system the
+			 * following "ESC[n;mR", where n is the row and m is the column,
+			 * we're not going to do this, although fifo_push() on
+			 * uart_rx_fifo could be called to do this */
+			if(t->n1 == 6)
+				goto success;
+			goto fail;
+		case 'J': /* reset */
+			switch(t->n1) {
+			case 3:
+			case 2: t->cursor = 0; /* with cursor */
+			case 1:
+				if(t->command_index) {
+					memset(t->m, ' ', t->size);
+					for(size_t i = 0; i < t->size; i++)
+						memcpy(&t->attributes[i], &t->attribute, sizeof(t->attribute));
+					goto success;
+				} /* fall through if number not supplied */
+			case 0:
+				memset(t->m, ' ', t->cursor);
+				for(size_t i = 0; i < t->cursor; i++)
+					memcpy(&t->attributes[i], &t->attribute, sizeof(t->attribute));
+				goto success;
+			}
+			goto fail;
+		case ';':
+			t->command_index = 0;
+			t->state = TERMINAL_NUMBER_2;
+			break;
+		default:
+			goto fail;
+		}
+		break;
+	case TERMINAL_NUMBER_2:
+		if(isdigit(c)) {
+			if(t->command_index > 3)
+				goto fail;
+			t->n2 = (t->n2 * (t->command_index ? 10 : 0)) + (c - '0');
+			t->command_index++;
+		} else {
+			switch(c) {
+			case 'm':
+				terminal_parse_attribute(&t->attribute, t->n1);
+				terminal_parse_attribute(&t->attribute, t->n2);
+				t->attributes[t->cursor] = t->attribute;
+				goto success;
+			case 'H':
+			case 'f':
+				terminal_at_xy(t, t->n2, t->n1, true);
+				goto success;
+			}
+			goto fail;
+		}
+		break;
+	case TERMINAL_DECTCEM:
+		if(isdigit(c)) {
+			if(t->command_index > 1)
+				goto fail;
+			t->n1 = (t->n1 * (t->command_index ? 10 : 0)) + (c - '0');
+			t->command_index++;
+			break;
+		}
+
+		if(t->n1 != 25)
+			goto fail;
+		switch(c) {
+		case 'l': t->cursor_on = false; goto success;
+		case 'h': t->cursor_on = true;  goto success;
+		default:
+			goto fail;
+		}
+	case TERMINAL_STATE_END:
+		t->state = TERMINAL_NORMAL_MODE;
+		break;
+	default:
+		fatal("invalid terminal state: %u", (unsigned)t->state);
+	}
+
+	return 0;
+success:
+	t->state = TERMINAL_NORMAL_MODE;
+	return 0;
+fail:
+	t->state = TERMINAL_NORMAL_MODE;
+	return -1;
+}
+
+void vt100_update(vt100_t *t, uint8_t c)
+{
+	assert(t);
+	assert(t->size <= VT100_MAX_SIZE);
+	assert((t->width * t->height) <= VT100_MAX_SIZE);
+
+	if(t->state != TERMINAL_NORMAL_MODE) {
+		if(terminal_escape_sequences(t, c)) {
+			t->state = TERMINAL_NORMAL_MODE;
+			/*warning("invalid ANSI command sequence");*/
+		}
+	} else {
+		switch(c) {
+		case ESCAPE:
+			t->state = TERMINAL_CSI;
+			break;
+		case '\t':
+			t->cursor += 8;
+			t->cursor &= ~0x7;
+			break;
+		case '\n':
+			t->cursor += t->width;
+			t->cursor = (t->cursor / t->width) * t->width;
+			break;
+		case '\r':
+			break;
+		case BACKSPACE:
+			terminal_at_xy_relative(t, -1, 0, true);
+			break;
+		default:
+			assert(t->cursor < t->size);
+			t->m[t->cursor] = c;
+			memcpy(&t->attributes[t->cursor], &t->attribute, sizeof(t->attribute));
+			t->cursor++;
+		}
+		if(t->cursor >= t->size) {
+			for(size_t i = 0; i < t->size; i++)
+				memcpy(&t->attributes[i], &t->attribute, sizeof(t->attribute));
+			memset(t->m, ' ', t->size);
+		}
+		t->cursor %= t->size;
+	}
+}
+
+#define FLASH_WRITE_CYCLES (20)  /* x10ns */
+#define FLASH_ERASE_CYCLES (200) /* x10ns */
+
+typedef enum {
+	FLASH_STATUS_RESERVED         = 1u << 0,
+	FLASH_STATUS_BLOCK_LOCKED     = 1u << 1,
+	FLASH_STATUS_PROGRAM_SUSPEND  = 1u << 2,
+	FLASH_STATUS_VPP              = 1u << 3,
+	FLASH_STATUS_PROGRAM          = 1u << 4,
+	FLASH_STATUS_ERASE_BLANK      = 1u << 5,
+	FLASH_STATUS_ERASE_SUSPEND    = 1u << 6,
+	FLASH_STATUS_DEVICE_READY     = 1u << 7,
+} flash_status_register_t;
+
+typedef enum {
+	FLASH_READ_ARRAY,
+	FLASH_QUERY,
+	FLASH_READ_DEVICE_IDENTIFIER,
+	FLASH_READ_STATUS_REGISTER,
+	FLASH_WORD_PROGRAM,
+	FLASH_WORD_PROGRAMMING,
+	FLASH_LOCK_OPERATION,
+	FLASH_LOCK_OPERATING,
+	FLASH_BLOCK_ERASE,
+	FLASH_BLOCK_ERASING,
+	FLASH_BUFFERED_PROGRAM,
+	FLASH_BUFFERED_PROGRAMMING,
+} flash_state_t;
+
+/** @note read the PC28F128P33BF60 datasheet to decode this
+ * information, this table was actually acquired from reading
+ * the data from the actual device. */
+static const uint16_t PC28F128P33BF60_CFI_Query_Table[0x200] = {
+0x0089, 0x881E, 0x0000, 0xFFFF, 0x0089, 0xBFCF, 0x0000, 0xFFFF,
+0x0089, 0x881E, 0x0000, 0x0000, 0x0089, 0xBFCF, 0x0000, 0xFFFF,
+0x0051, 0x0052, 0x0059, 0x0001, 0x0000, 0x000A, 0x0001, 0x0000,
+0x0000, 0x0000, 0x0000, 0x0023, 0x0036, 0x0085, 0x0095, 0x0006,
+0x0009, 0x0009, 0x0000, 0x0002, 0x0002, 0x0003, 0x0000, 0x0018,
+0x0001, 0x0000, 0x0009, 0x0000, 0x0002, 0x007E, 0x0000, 0x0000,
+0x0002, 0x0003, 0x0000, 0x0080, 0x0000, 0x0000, 0x0000, 0x0000,
+0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFBE, 0x0396, 0x66A2, 0xA600, 0x395A, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0x0050, 0x0052, 0x0049, 0x0031, 0x0035, 0x00E6,
+0x0001, 0x0000, 0x0000, 0x0001, 0x0003, 0x0000, 0x0030, 0x0090,
+0x0002, 0x0080, 0x0000, 0x0003, 0x0003, 0x0089, 0x0000, 0x0000,
+0x0000, 0x0000, 0x0000, 0x0000, 0x0010, 0x0000, 0x0004, 0x0004,
+0x0004, 0x0001, 0x0002, 0x0003, 0x0007, 0x0001, 0x0024, 0x0000,
+0x0001, 0x0000, 0x0011, 0x0000, 0x0000, 0x0002, 0x007E, 0x0000,
+0x0000, 0x0002, 0x0064, 0x0000, 0x0002, 0x0003, 0x0000, 0x0080,
+0x0000, 0x0000, 0x0000, 0x0080, 0x0003, 0x0000, 0x0080, 0x0000,
+0x0064, 0x0000, 0x0002, 0x0003, 0x0000, 0x0080, 0x0000, 0x0000,
+0x0000, 0x0080, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xF020, 0x4DBF, 0x838C, 0xFC08, 0x638F, 0x20E3, 0xFF03, 0xD8D7,
+0xC838, 0xFFFF, 0xFFFF, 0xAFFF, 0x3352, 0xB333, 0x3004, 0x1353,
+0x0003, 0xA000, 0x80D5, 0x8A03, 0xFF4A, 0xFFFF, 0xFFFF, 0x0FFF,
+0x2000, 0x0000, 0x0004, 0x0080, 0x1000, 0x0000, 0x0002, 0x0040,
+0x0000, 0x0008, 0x0000, 0x0001, 0x2000, 0x0000, 0x0400, 0x0000,
+0x0080, 0x0000, 0x0010, 0x0000, 0x0002, 0x4000, 0x0000, 0x0800,
+0x0000, 0x0100, 0x0000, 0x0020, 0x0000, 0x0004, 0x8000, 0x0000,
+0x1000, 0x0000, 0x0200, 0x0000, 0x0040, 0x0000, 0x0008, 0x0000,
+0x0001, 0x2000, 0x0000, 0x0800, 0x0000, 0x0200, 0x0000, 0x0040,
+0x0000, 0x0008, 0x0000, 0x0001, 0x2000, 0x0000, 0x0400, 0x0000,
+0x0080, 0x0000, 0x0010, 0x0000, 0x0002, 0x4000, 0x0000, 0x0800,
+0x0000, 0x0100, 0x0000, 0x0020, 0x0000, 0x0004, 0x8000, 0x0000,
+0x1000, 0x0000, 0x0200, 0x0000, 0x0040, 0x0000, 0x0008, 0x0000,
+0x0001, 0x4000, 0x0000, 0x1000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+};
+
+uint16_t PC28F128P33BF60_CFI_Query_Read(uint32_t addr)
+{
+	addr &= 0x3ff;
+	if(addr > 0x1ff) {
+		addr &= 0x7;
+		static const uint16_t r[] = {
+			0x0089, 0x881E, 0x0000, 0x0000,
+			0x0089, 0xBFCF, 0x0000, 0xFFFF
+		};
+		return r[addr];
+	}
+	return PC28F128P33BF60_CFI_Query_Table[addr];
+}
+
+static uint16_t h2_io_flash_read(flash_t *f, uint32_t addr, bool oe, bool we, bool rst)
+{
+	if(rst)
+		return 0;
+
+	if(oe && we) {
+		warning("OE and WE set at the same time");
+		return 0;
+	}
+
+	if(!oe) {
+		warning("flash read with OE not selected");
+		return 0;
+	}
+
+	switch(f->mode) {
+	case FLASH_READ_ARRAY:             return f->nvram[0x7ffffff & addr];
+	case FLASH_READ_DEVICE_IDENTIFIER:
+	case FLASH_QUERY:                  return PC28F128P33BF60_CFI_Query_Read(addr);
+	case FLASH_READ_STATUS_REGISTER:   return f->status;
+	case FLASH_WORD_PROGRAMMING:
+	case FLASH_WORD_PROGRAM:           return f->status;
+	case FLASH_BLOCK_ERASING:
+	case FLASH_BLOCK_ERASE:            return f->status;
+	case FLASH_LOCK_OPERATING:
+	case FLASH_LOCK_OPERATION:         return f->status; /* return what? */
+	default:
+		fatal("invalid flash state: %u", f->mode);
+	}
+
+	return 0;
+}
+
+static unsigned addr_to_block(uint32_t addr)
+{
+	uint32_t lower_64k_blocks_highest_address = 127u * 64u * 1024u; /* 0x7F000 */
+	/*assert(addr < 0x7ffffff);*/
+	if(addr < lower_64k_blocks_highest_address)
+		return addr / (64u * 1024u);
+	addr -= lower_64k_blocks_highest_address;
+	addr /= (16u * 1024u);
+	return addr + 127u;
+}
+
+static unsigned block_size(unsigned block)
+{
+	if(block >= 127u)
+		return 16u * 1024u;
+	return 64u * 1024u;
+}
+
+static bool block_locked(flash_t *f, unsigned block)
+{
+	assert(f);
+	assert(block < FLASH_BLOCK_MAX);
+	return !!(f->locks[block]);
+}
+
+static bool address_protected(flash_t *f, uint32_t addr)
+{
+	assert(f);
+	return block_locked(f, addr_to_block(addr));
+}
+
+/**@todo implement the full standard for the Common Flash Memory Interface, and
+ * make the timing based on a simulated calculated time instead multiples of
+ * 10us see:
+ * <https://en.wikipedia.org/wiki/Common_Flash_Memory_Interface> with the
+ * devices PC28F128P33BF60 and NP8P128A13T1760E. The lock status of a register
+ * should be read as well as checking f->arg1_address == f->arg2_address for
+ * commands which require this.*/
+static void h2_io_flash_update(flash_t *f, uint32_t addr, uint16_t data, bool oe, bool we, bool rst, bool cs)
+{
+	assert(f);
+	if(oe && we)
+		warning("OE and WE set at the same time");
+
+	if(rst) {
+		f->mode = FLASH_READ_ARRAY;
+		return;
+	}
+
+	switch(f->mode) {
+	case FLASH_READ_ARRAY:
+	case FLASH_READ_STATUS_REGISTER:
+	case FLASH_QUERY:
+	case FLASH_READ_DEVICE_IDENTIFIER:
+		f->arg1_address = addr;
+		f->cycle = 0;
+		f->status |= FLASH_STATUS_DEVICE_READY;
+
+		if(!we && f->we && cs) {
+			switch(f->data) {
+			case 0x00: break;
+			case 0xff: f->mode = FLASH_READ_ARRAY;             break;
+			case 0x90: f->mode = FLASH_READ_DEVICE_IDENTIFIER; break;
+			case 0x98: f->mode = FLASH_QUERY;                  break;
+			case 0x70: f->mode = FLASH_READ_STATUS_REGISTER;   break;
+			case 0x50: f->status = FLASH_STATUS_DEVICE_READY;  break; /* changes state? */
+			case 0x10:
+			case 0x40: f->mode = FLASH_WORD_PROGRAM;           break;
+			case 0xE8: f->mode = FLASH_BUFFERED_PROGRAM;       break;
+			case 0x20: f->mode = FLASH_BLOCK_ERASE;            break;
+			/*case 0xB0: SUSPEND NOT IMPLEMENTED;              break; */
+			/*case 0xD0: RESUME NOT IMPLEMENTED;               break; */
+			case 0x60: f->mode = FLASH_LOCK_OPERATION;         break;
+			/*case 0xC0: PROTECTION PROGRAM NOT IMPLEMENTED;     break; */
+			default:
+				warning("Common Flash Interface command not implemented: %x", (unsigned)(f->data));
+				f->mode = FLASH_READ_ARRAY;
+			}
+		}
+		break;
+	case FLASH_WORD_PROGRAM:
+		if(!we && f->we && cs) {
+			f->cycle   = 0;
+			if(address_protected(f, f->arg1_address)) {
+				warning("address locked: %u", (unsigned)f->arg1_address);
+				f->status |= FLASH_STATUS_BLOCK_LOCKED;
+				f->status |= FLASH_STATUS_PROGRAM;
+				f->mode    = FLASH_READ_STATUS_REGISTER;
+			} else {
+				f->status &= ~FLASH_STATUS_DEVICE_READY;
+				f->mode    = FLASH_WORD_PROGRAMMING;
+			}
+		} else if(we && cs) {
+			f->arg2_address = addr;
+		}
+		break;
+	case FLASH_WORD_PROGRAMMING:
+		if(f->cycle++ > FLASH_WRITE_CYCLES) {
+			f->nvram[f->arg1_address] &= f->data;
+			f->mode         = FLASH_READ_STATUS_REGISTER;
+			f->cycle        = 0;
+			f->status |= FLASH_STATUS_DEVICE_READY;
+		}
+		break;
+	case FLASH_LOCK_OPERATION:
+		if(!we && f->we && cs) {
+			f->mode = FLASH_LOCK_OPERATING;
+		} else if(we && cs) {
+			f->arg2_address = addr;
+		}
+		break;
+	case FLASH_LOCK_OPERATING:
+		if(f->arg1_address > FLASH_BLOCK_MAX) {
+			warning("block address invalid: %u", (unsigned)f->arg1_address);
+			f->mode = FLASH_READ_STATUS_REGISTER;
+			break;
+		}
+
+		switch(f->data) {
+		case 0xD0:
+			if(f->locks[f->arg1_address] != FLASH_LOCKED_DOWN)
+				f->locks[f->arg1_address] = FLASH_UNLOCKED;
+			else
+				warning("block locked down: %u", (unsigned)f->arg1_address);
+			break;
+		case 0x01:
+			if(f->locks[f->arg1_address] != FLASH_LOCKED_DOWN)
+				f->locks[f->arg1_address] = FLASH_LOCKED;
+			else
+				warning("block locked down: %u", (unsigned)f->arg1_address);
+			break;
+		case 0x2F:
+			f->locks[f->arg1_address] = FLASH_LOCKED_DOWN;
+			break;
+		default:
+			warning("Unknown/Unimplemented Common Flash Interface Lock Operation: %x", (unsigned)(f->data));
+		}
+		f->mode = FLASH_READ_STATUS_REGISTER;
+		break;
+	case FLASH_BLOCK_ERASE:
+		/*f->status &= ~FLASH_STATUS_DEVICE_READY;*/
+		if(!we && f->we && cs) {
+			if(addr != f->arg1_address)
+				warning("block addresses differ: 1(%u) 2(%u)", f->arg1_address, addr);
+			if(f->data != 0xD0) /* erase confirm */
+				f->mode = FLASH_READ_STATUS_REGISTER;
+			else
+				f->mode = FLASH_BLOCK_ERASING;
+
+			if(f->mode == FLASH_BLOCK_ERASING && address_protected(f, f->arg1_address)) {
+				warning("address locked: %u", (unsigned)f->arg1_address);
+				f->status |= FLASH_STATUS_BLOCK_LOCKED;
+				f->status |= FLASH_STATUS_ERASE_BLANK;
+				f->mode    = FLASH_READ_STATUS_REGISTER;
+			}
+		} else if(we && cs) {
+			f->arg2_address = addr;
+		}
+		f->cycle = 0;
+		break;
+	case FLASH_BLOCK_ERASING:
+		f->status &= ~FLASH_STATUS_DEVICE_READY;
+		if(f->cycle++ > FLASH_ERASE_CYCLES) {
+			unsigned block = f->arg1_address;
+			unsigned size  = block_size(block);
+			if(block >= FLASH_BLOCK_MAX) {
+				warning("block operation out of range: %u", block);
+				f->status |= FLASH_STATUS_ERASE_BLANK;
+			} else {
+				memset(f->nvram+block*size, 0xff, sizeof(f->nvram[0])*size);
+			}
+			f->cycle = 0;
+			f->mode = FLASH_READ_STATUS_REGISTER;
+			f->status |= FLASH_STATUS_DEVICE_READY;
+		}
+		break;
+	case FLASH_BUFFERED_PROGRAM:
+	case FLASH_BUFFERED_PROGRAMMING:
+		warning("block programming not implemented");
+		f->status |= FLASH_STATUS_PROGRAM;
+		f->mode = FLASH_READ_STATUS_REGISTER;
+		break;
+	default:
+		fatal("invalid flash state: %u", f->mode);
+		return;
+	}
+	if(we && !oe)
+		f->data = data;
+	f->we = we;
+	f->cs = cs;
+}
+
+uint16_t h2_io_memory_read_operation(h2_soc_state_t *soc)
+{
+	assert(soc);
+	uint32_t flash_addr = ((uint32_t)(soc->mem_control & FLASH_MASK_ADDR_UPPER_MASK) << 16) | soc->mem_addr_low;
+	bool flash_rst = soc->mem_control & FLASH_MEMORY_RESET;
+	bool flash_cs  = soc->mem_control & FLASH_CHIP_SELECT;
+	bool sram_cs   = soc->mem_control & SRAM_CHIP_SELECT;
+	bool oe        = soc->mem_control & FLASH_MEMORY_OE;
+	bool we        = soc->mem_control & FLASH_MEMORY_WE;
+
+	if(oe && we)
+		return 0;
+
+	if(flash_cs && sram_cs)
+		warning("SRAM and Flash Chip selects both high");
+
+	if(flash_cs)
+		return h2_io_flash_read(&soc->flash, flash_addr, oe, we, flash_rst);
+
+	if(sram_cs && oe && !we)
+		return soc->vram[flash_addr];
+	return 0;
 }
 
 static uint16_t h2_io_get_default(h2_soc_state_t *soc, uint16_t addr, bool *debug_on)
 {
 	assert(soc);
 	debug("IO read addr: %"PRIx16, addr);
-
+	(void)debug_on;
 	switch(addr) {
-	case iUart:         return UART_TX_FIFO_EMPTY | soc->uart_getchar_register; /** @bug This does not reflect accurate timing */
+	case iUart:         return UART_TX_FIFO_EMPTY | soc->uart_getchar_register;
+	case iVT100:        return UART_TX_FIFO_EMPTY | soc->ps2_getchar_register;
 	case iSwitches:     return soc->switches;
-	case iTimerCtrl:    return soc->timer_control;
 	case iTimerDin:     return soc->timer;
-	/** @bug reading from VGA memory is broken in the hardware for the moment */
-	case iVgaTxtDout:   return 0;
-	case iPs2:          return PS2_NEW_CHAR | wrap_getch(debug_on);
-	case iLfsr:         return soc->lfsr;
-	case iMemDin:       
-		/**@todo Select nvram/vram, improve memory simulation */
-		if((soc->mem_control & PCM_MEMORY_OE) && !(soc->mem_control & PCM_MEMORY_WE))
-			return soc->nvram[((uint32_t)(soc->mem_control & PCM_MASK_ADDR_UPPER_MASK) << 16) | soc->mem_addr_low];
-		return 0;
+	case iMemDin:       return h2_io_memory_read_operation(soc);
 	default:
 		warning("invalid read from %04"PRIx16, addr);
 	}
@@ -899,11 +1511,6 @@ static void h2_io_set_default(h2_soc_state_t *soc, uint16_t addr, uint16_t value
 	assert(soc);
 	debug("IO write addr/value: %"PRIx16"/%"PRIx16, addr, value);
 
-	if(addr & 0x8000) {
-		soc->vga[addr & 0x1FFF] = value;
-		return;
-	}
-
 	switch(addr) {
 	case oUart:
 			if(value & UART_TX_WE)
@@ -913,17 +1520,26 @@ static void h2_io_set_default(h2_soc_state_t *soc, uint16_t addr, uint16_t value
 			break;
 	case oLeds:       soc->leds           = value; break;
 	case oTimerCtrl:  soc->timer_control  = value; break;
-	case oVgaCtrl:    soc->vga_control    = value; break;
-	case oVgaCursor:  soc->vga_cursor     = value; break;
-	case o8SegLED:    soc->led_8_segments = value; break;
-	case oIrcMask:    soc->irc_mask       = value; break;
-	case oLfsr:       soc->lfsr           = value; break;
-	case oMemControl: 
-		/**@todo Select nvram/vram, improve memory simulation */
-		soc->mem_control    = value; 
-		if(!(soc->mem_control & PCM_MEMORY_OE) && (soc->mem_control & PCM_MEMORY_WE))
-			soc->nvram[((uint32_t)(soc->mem_control & PCM_MASK_ADDR_UPPER_MASK) << 16) | soc->mem_addr_low] = soc->mem_dout;
+	case oVT100:
+		if(value & UART_TX_WE)
+			vt100_update(&soc->vt100, value);
+		if(value & UART_RX_RE)
+			soc->ps2_getchar_register = wrap_getch(debug_on);
 		break;
+	case o7SegLED:    soc->led_7_segments = value; break;
+	case oIrcMask:    soc->irc_mask       = value; break;
+	case oMemControl:
+	{
+		soc->mem_control    = value;
+
+		bool sram_cs   = soc->mem_control & SRAM_CHIP_SELECT;
+		bool oe        = soc->mem_control & FLASH_MEMORY_OE;
+		bool we        = soc->mem_control & FLASH_MEMORY_WE;
+
+		if(sram_cs && !oe && we)
+			soc->vram[((uint32_t)(soc->mem_control & FLASH_MASK_ADDR_UPPER_MASK) << 16) | soc->mem_addr_low] = soc->mem_dout;
+		break;
+	}
 	case oMemAddrLow: soc->mem_addr_low   = value; break;
 	case oMemDout:    soc->mem_dout       = value; break;
 	default:
@@ -931,16 +1547,9 @@ static void h2_io_set_default(h2_soc_state_t *soc, uint16_t addr, uint16_t value
 	}
 }
 
-static uint16_t lfsr(uint16_t v)
-{
-	return (v >> 1) ^ (-(v & 1u) & 0x400b);
-}
-
 static void h2_io_update_default(h2_soc_state_t *soc)
 {
 	assert(soc);
-
-	soc->lfsr = lfsr(soc->lfsr);
 
 	if(soc->timer_control & TIMER_ENABLE) {
 		if(soc->timer_control & TIMER_RESET) {
@@ -957,11 +1566,37 @@ static void h2_io_update_default(h2_soc_state_t *soc)
 			}
 		}
 	}
+
+	{
+		uint32_t flash_addr = ((uint32_t)(soc->mem_control & FLASH_MASK_ADDR_UPPER_MASK) << 16) | soc->mem_addr_low;
+		bool flash_rst = soc->mem_control & FLASH_MEMORY_RESET;
+		bool flash_cs  = soc->mem_control & FLASH_CHIP_SELECT;
+		bool oe        = soc->mem_control & FLASH_MEMORY_OE;
+		bool we        = soc->mem_control & FLASH_MEMORY_WE;
+		h2_io_flash_update(&soc->flash, flash_addr, soc->mem_dout, oe, we, flash_rst, flash_cs);
+	}
 }
 
 h2_soc_state_t *h2_soc_state_new(void)
 {
-	return allocate_or_die(sizeof(h2_soc_state_t));
+	h2_soc_state_t *r = allocate_or_die(sizeof(h2_soc_state_t));
+	vt100_t *v = &r->vt100;
+	memset(r->flash.nvram, 0xff, sizeof(r->flash.nvram[0])*FLASH_BLOCK_MAX);
+	memset(r->flash.locks, FLASH_LOCKED, FLASH_BLOCK_MAX);
+
+	v->width        = VGA_WIDTH;
+	v->height       = VGA_HEIGHT;
+	v->size         = VGA_WIDTH * VGA_HEIGHT;
+	v->state        = TERMINAL_NORMAL_MODE;
+	v->cursor_on    = true;
+	v->blinks       = false;
+	v->n1           = 1;
+	v->n2           = 1;
+	v->attribute.foreground_color = WHITE;
+	v->attribute.background_color = BLACK;
+	for(size_t i = 0; i < v->size; i++)
+		v->attributes[i] = v->attribute;
+	return r;
 }
 
 void h2_soc_state_free(h2_soc_state_t *soc)
@@ -1269,24 +1904,10 @@ again:
 			break;
 		}
 		case 'd':
-			if(num1 & 0x8000) { /* VGA memory */
-				if((long)(num1 & 0x1FFF) + (long)num2 > VGA_BUFFER_LENGTH) {
-					fprintf(ds->output, "overflow in VGA dump\n");
-					break;
-				}
-
-				if(io)
-					memory_print(ds->output, num1, io->soc->vga + (num1 & 0x1FFF), num2, true);
-				else
-					fprintf(ds->output, "I/O unavailable\n");
-			} else { /* RAM */
-
-				if(((long)num1 + (long)num2) > MAX_CORE)
-					fprintf(ds->output, "overflow in RAM dump\n");
-				else
-					memory_print(ds->output, num1, h->core + num1, num2, true);
-
-			}
+			if(((long)num1 + (long)num2) > MAX_CORE)
+				fprintf(ds->output, "overflow in RAM dump\n");
+			else
+				memory_print(ds->output, num1, h->core + num1, num2, true);
 			break;
 		case 'l':
 			if(!is_numeric1) {
@@ -1398,7 +2019,7 @@ again:
 			}
 			for(size_t i = 0; i < VGA_HEIGHT; i++) {
 				for(size_t j = 0; j < VGA_WIDTH; j++) {
-					unsigned char c = io->soc->vga[i*VGA_WIDTH + j];
+					unsigned char c = io->soc->vt100.m[i*VGA_WIDTH + j];
 					fputc(c < 32 || c > 127 ? '?' : c, ds->output);
 				}
 				fputc('\n', ds->output);
@@ -1407,7 +2028,7 @@ again:
 			break;
 		case 'p':
 			if(io)
-				soc_print(ds->output, io->soc, log_level >= LOG_DEBUG);
+				soc_print(ds->output, io->soc);
 			else
 				fprintf(ds->output, "I/O unavailable\n");
 			break;
@@ -1516,7 +2137,9 @@ int h2_run(h2_t *h, h2_io_t *io, FILE *output, unsigned steps, symbol_table_t *s
 			case ALU_OP_T_LOAD:
 				if(h->tos & 0x4000) {
 					if(io) {
-						tos = io->in(io->soc, h->tos, &turn_debug_on);
+						if(h->tos & 0x1)
+							warning("unaligned register read: %04x", (unsigned)h->tos);
+						tos = io->in(io->soc, h->tos & ~0x1, &turn_debug_on);
 						if(turn_debug_on) {
 							ds.step = true;
 							run_debugger = true;
@@ -1532,7 +2155,7 @@ int h2_run(h2_t *h, h2_io_t *io, FILE *output, unsigned steps, symbol_table_t *s
 			case ALU_OP_N_LSHIFT_T: tos = nos << tos;           break;
 			case ALU_OP_DEPTH:      tos = h->sp;                break;
 			case ALU_OP_N_ULESS_T:  tos = -(nos < tos);         break;
-			case ALU_OP_ENABLE_INTERRUPTS: h->ie = tos & 1;     break;
+			case ALU_OP_ENABLE_INTERRUPTS: h->ie = tos & 1; /*tos = nos;*/ break;
 			case ALU_OP_INTERRUPTS_ENABLED: tos = -h->ie;       break;
 			case ALU_OP_RDEPTH:     tos = h->rp;                break;
 			case ALU_OP_T_EQUAL_0:  tos = -(tos == 0);          break;
@@ -1560,7 +2183,9 @@ int h2_run(h2_t *h, h2_io_t *io, FILE *output, unsigned steps, symbol_table_t *s
 			if(instruction & N_TO_ADDR_T) {
 				if((h->tos & 0x4000) && ALU_OP(instruction) != ALU_OP_T_LOAD) {
 					if(io) {
-						io->out(io->soc, h->tos, nos, &turn_debug_on);
+						if(h->tos & 0x1)
+							warning("unaligned register write: %04x <- %04x", (unsigned)h->tos, (unsigned)nos);
+						io->out(io->soc, h->tos & ~0x1, nos, &turn_debug_on);
 						if(turn_debug_on) {
 							ds.step = true;
 							run_debugger = true;
@@ -1637,6 +2262,7 @@ typedef enum {
 	LEX_INLINE,
 	LEX_QUOTE,
 
+	LEX_PWD,
 	LEX_SET,
 	LEX_PC,
 	LEX_BREAK,
@@ -1645,7 +2271,7 @@ typedef enum {
 	LEX_BUILT_IN,
 
 	/* start of instructions */
-#define X(NAME, STRING, INSTRUCTION) LEX_ ## NAME,
+#define X(NAME, STRING, DEFINE, INSTRUCTION) LEX_ ## NAME,
 	X_MACRO_INSTRUCTIONS
 #undef X
 	/* end of named tokens and instructions */
@@ -1685,6 +2311,7 @@ static const char *keywords[] =
 	[LEX_HIDDEN]     =  "hidden",
 	[LEX_INLINE]     =  "inline",
 	[LEX_QUOTE]      =  "'",
+	[LEX_PWD]        =  ".pwd",
 	[LEX_SET]        =  ".set",
 	[LEX_PC]         =  ".pc",
 	[LEX_BREAK]      =  ".break",
@@ -1693,7 +2320,7 @@ static const char *keywords[] =
 	[LEX_BUILT_IN]   =  ".built-in",
 
 	/* start of instructions */
-#define X(NAME, STRING, INSTRUCTION) [ LEX_ ## NAME ] = STRING,
+#define X(NAME, STRING, DEFINE, INSTRUCTION) [ LEX_ ## NAME ] = STRING,
 	X_MACRO_INSTRUCTIONS
 #undef X
 	/* end of named tokens and instructions */
@@ -1904,6 +2531,7 @@ again:
 		l->line++;
 		goto again;
 	case '(':
+		/**@todo handle words like "(do)" */
 		for(; ')' != (ch = next_char(l));)
 			if(ch == EOF)
 				syntax_error(l, "'(' comment terminated by EOF");
@@ -1997,6 +2625,7 @@ again:
 	X(SYM_DEFINITION,          "definition")\
 	X(SYM_CHAR,                "[char]")\
 	X(SYM_QUOTE,               "'")\
+	X(SYM_PWD,                 "pwd")\
 	X(SYM_SET,                 "set")\
 	X(SYM_PC,                  "pc")\
 	X(SYM_BREAK,               "break")\
@@ -2026,10 +2655,9 @@ typedef struct node_t  {
 	struct node_t *o[];
 } node_t;
 
-static node_t *node_new(lexer_t *l, parse_e type, size_t size)
+static node_t *node_new(parse_e type, size_t size)
 {
 	node_t *r = allocate_or_die(sizeof(*r) + sizeof(r->o[0]) * size);
-	assert(l);
 	if(log_level >= LOG_DEBUG)
 		fprintf(stderr, "node> %s\n", names[type]);
 	r->length = size;
@@ -2037,10 +2665,9 @@ static node_t *node_new(lexer_t *l, parse_e type, size_t size)
 	return r;
 }
 
-static node_t *node_grow(lexer_t *l, node_t *n)
+static node_t *node_grow(node_t *n)
 {
 	node_t *r = NULL;
-	assert(l);
 	assert(n);
 	errno = 0;
 	r = realloc(n, sizeof(*n) + (sizeof(n->o[0]) * (n->length + 1)));
@@ -2096,11 +2723,11 @@ static void use(lexer_t *l, node_t *n)
 }
 
 static int token_enum_print(token_e sym, FILE *output)
-{ 
+{
 	assert(output);
 	assert(sym < LEX_ERROR);
 	const char *s = keywords[sym];
-	return fprintf(stderr, "%s(%u)", s ? s : "???", sym);
+	return fprintf(output, "%s(%u)", s ? s : "???", sym);
 }
 
 static void node_print(FILE *output, node_t *n, bool shallow, unsigned depth)
@@ -2143,7 +2770,7 @@ static node_t *defined_by_token(lexer_t *l, parse_e type)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, type, 0);
+	r = node_new(type, 0);
 	use(l, r);
 	return r;
 }
@@ -2153,7 +2780,7 @@ static node_t *variable_or_constant(lexer_t *l, bool variable)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, variable ? SYM_VARIABLE : SYM_CONSTANT, 1);
+	r = node_new(variable ? SYM_VARIABLE : SYM_CONSTANT, 1);
 	expect(l, LEX_IDENTIFIER);
 	use(l, r);
 	if(accept(l, LEX_LITERAL)) {
@@ -2169,7 +2796,7 @@ static node_t *jump(lexer_t *l, parse_e type)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, type, 0);
+	r = node_new(type, 0);
 	(void)(accept(l, LEX_LITERAL) || accept(l, LEX_STRING) || expect(l, LEX_IDENTIFIER));
 	use(l, r);
 	return r;
@@ -2181,13 +2808,13 @@ static node_t *for_next(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_FOR_NEXT, 1);
+	r = node_new(SYM_FOR_NEXT, 1);
 	r->o[0] = statements(l);
 	if(accept(l, LEX_AFT)) {
 		r->type = SYM_FOR_AFT_THEN_NEXT;
-		r = node_grow(l, r);
+		r = node_grow(r);
 		r->o[1] = statements(l);
-		r = node_grow(l, r);
+		r = node_grow(r);
 		expect(l, LEX_THEN);
 		r->o[2] = statements(l);
 	}
@@ -2199,13 +2826,13 @@ static node_t *begin(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_BEGIN_UNTIL, 1);
+	r = node_new(SYM_BEGIN_UNTIL, 1);
 	r->o[0] = statements(l);
 	if(accept(l, LEX_AGAIN)) {
 		r->type = SYM_BEGIN_AGAIN;
 	} else if(accept(l, LEX_WHILE)) {
 		r->type = SYM_BEGIN_WHILE_REPEAT;
-		r = node_grow(l, r);
+		r = node_grow(r);
 		r->o[1] = statements(l);
 		expect(l, LEX_REPEAT);
 	} else {
@@ -2218,7 +2845,7 @@ static node_t *if1(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_IF1, 2);
+	r = node_new(SYM_IF1, 2);
 	r->o[0] = statements(l);
 	if(accept(l, LEX_ELSE))
 		r->o[1] = statements(l);
@@ -2236,7 +2863,7 @@ static node_t *define(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_DEFINITION, 1);
+	r = node_new(SYM_DEFINITION, 1);
 	if(accept(l, LEX_IDENTIFIER))
 		;
 	else
@@ -2271,7 +2898,7 @@ static node_t *char_compile(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_CHAR, 0);
+	r = node_new(SYM_CHAR, 0);
 	expect(l, LEX_IDENTIFIER);
 	use(l, r);
 	if(strlen(r->token->p.id) > 1)
@@ -2283,7 +2910,7 @@ static node_t *mode(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_MODE, 0);
+	r = node_new(SYM_MODE, 0);
 	expect(l, LEX_LITERAL);
 	use(l, r);
 	return r;
@@ -2293,7 +2920,18 @@ static node_t *pc(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_PC, 0);
+	r = node_new(SYM_PC, 0);
+	if(!accept(l, LEX_LITERAL))
+		expect(l, LEX_IDENTIFIER);
+	use(l, r);
+	return r;
+}
+
+static node_t *pwd(lexer_t *l)
+{
+	node_t *r;
+	assert(l);
+	r = node_new(SYM_PWD, 0);
 	if(!accept(l, LEX_LITERAL))
 		expect(l, LEX_IDENTIFIER);
 	use(l, r);
@@ -2304,7 +2942,7 @@ static node_t *set(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_SET, 0);
+	r = node_new(SYM_SET, 0);
 	if(!accept(l, LEX_IDENTIFIER))
 		expect(l, LEX_LITERAL);
 	use(l, r);
@@ -2318,7 +2956,7 @@ static node_t *allocate(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_ALLOCATE, 0);
+	r = node_new(SYM_ALLOCATE, 0);
 	if(!accept(l, LEX_IDENTIFIER))
 		expect(l, LEX_LITERAL);
 	use(l, r);
@@ -2329,7 +2967,7 @@ static node_t *quote(lexer_t *l)
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_QUOTE, 0);
+	r = node_new(SYM_QUOTE, 0);
 	if(!accept(l, LEX_IDENTIFIER))
 		expect(l, LEX_STRING);
 	use(l, r);
@@ -2341,9 +2979,9 @@ static node_t *statements(lexer_t *l)
 	node_t *r;
 	size_t i = 0;
 	assert(l);
-	r = node_new(l, SYM_STATEMENTS, 2);
+	r = node_new(SYM_STATEMENTS, 2);
 again:
-	r = node_grow(l, r);
+	r = node_grow(r);
 	if(accept(l, LEX_CALL)) {
 		r->o[i++] = jump(l, SYM_CALL);
 		goto again;
@@ -2390,6 +3028,9 @@ again:
 	} else if(accept(l, LEX_IDENTIFIER)) {
 		r->o[i++] = defined_by_token(l, SYM_CALL_DEFINITION);
 		goto again;
+	} else if(accept(l, LEX_PWD)) {
+		r->o[i++] = pwd(l);
+		goto again;
 	} else if(accept(l, LEX_SET)) {
 		r->o[i++] = set(l);
 		goto again;
@@ -2421,7 +3062,7 @@ static node_t *program(lexer_t *l) /* block ( "." | EOF ) */
 {
 	node_t *r;
 	assert(l);
-	r = node_new(l, SYM_PROGRAM, 1);
+	r = node_new(SYM_PROGRAM, 1);
 	lexer(l);
 	r->o[0] = statements(l);
 	expect(l, LEX_EOI);
@@ -2582,7 +3223,7 @@ static uint16_t lexer_to_alu_op(token_e t)
 {
 	assert(t >= LEX_DUP && t <= LEX_RDROP);
 	switch(t) {
-#define X(NAME, STRING, INSTRUCTION) case LEX_ ## NAME : return CODE_ ## NAME ;
+#define X(NAME, STRING, DEFINE, INSTRUCTION) case LEX_ ## NAME : return CODE_ ## NAME ;
 	X_MACRO_INSTRUCTIONS
 #undef X
 	default: fatal("invalid ALU operation: %u", t);
@@ -2665,22 +3306,31 @@ typedef struct {
 	char *name;
 	size_t len;
 	bool inline_bit;
+	bool hidden;
+	bool compile;
 	uint16_t code[32];
 } built_in_words_t;
 
 static built_in_words_t built_in_words[] = {
-#define X(NAME, STRING, INSTRUCTION) { .name = STRING, .len = 1, .inline_bit = true, .code = { INSTRUCTION } },
+#define X(NAME, STRING, DEFINE, INSTRUCTION) \
+	{\
+		.name = STRING,\
+		.compile = DEFINE,\
+		.len = 1,\
+		.inline_bit = true,\
+		.hidden = false,\
+		.code = { INSTRUCTION }\
+	},
 	X_MACRO_INSTRUCTIONS
 #undef X
 	/**@note We might want to compile these words, even if we are not
 	 * compiling the other in-line-able, so the compiler can use them for
 	 * variable declaration and for...next loops */
 	/**@warning 1 lshift used, in the original j1.v it is not needed */
-	{ .name = "doVar", .inline_bit = false, .len = 1, .code = {CODE_FROMR} },
-	{ .name = "r1-",   .inline_bit = false, .len = 5, .code = {CODE_FROMR, CODE_FROMR, CODE_T_N1, CODE_TOR, CODE_TOR} },
-	{ .name = NULL,    .inline_bit = false, .len = 0, .code = {0} }
+	{ .name = "doVar", .compile = true, .inline_bit = false, .hidden = true, .len = 1, .code = {CODE_FROMR} },
+	{ .name = "r1-",   .compile = true, .inline_bit = false, .hidden = true, .len = 5, .code = {CODE_FROMR, CODE_FROMR, CODE_T_N1, CODE_TOR, CODE_TOR} },
+	{ .name = NULL,    .compile = true, .inline_bit = false, .hidden = true, .len = 0, .code = {0} }
 };
-
 
 static void generate_loop_decrement(h2_t *h, assembler_t *a, symbol_table_t *t)
 {
@@ -2716,7 +3366,7 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 			assemble(h, a, n->o[i], t, e);
 		break;
 	case SYM_LABEL:
-		symbol_table_add(t, SYMBOL_TYPE_LABEL, n->token->p.id, here(h, a), e);
+		symbol_table_add(t, SYMBOL_TYPE_LABEL, n->token->p.id, here(h, a), e, false);
 		break;
 	case SYM_BRANCH:
 	case SYM_0BRANCH:
@@ -2724,11 +3374,12 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 		generate_jump(h, a, t, n->token, n->type, e);
 		break;
 	case SYM_CONSTANT:
-		symbol_table_add(t, SYMBOL_TYPE_CONSTANT, n->token->p.id, n->o[0]->token->p.number, e);
+		symbol_table_add(t, SYMBOL_TYPE_CONSTANT, n->token->p.id, n->o[0]->token->p.number, e, false);
 		break;
 	case SYM_VARIABLE:
 		if(a->mode & MODE_COMPILE_WORD_HEADER && a->built_in_words_defined) {
 			a->do_var = a->do_var ? a->do_var : symbol_table_lookup(t, "doVar");
+			assert(a->do_var);
 			hole1 = hole(h, a);
 			fix(h, hole1, a->pwd);
 			a->pwd = hole1 << 1;
@@ -2737,7 +3388,7 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 		}
 		/* fall through */
 	case SYM_LOCATION:
-		here(h, a); 
+		here(h, a);
 
 		if(n->o[0]->token->type == LEX_LITERAL) {
 			hole1 = hole(h, a);
@@ -2749,7 +3400,7 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 
 		/**@note The lowest bit of the address for memory loads is
 		 * discarded. */
-		symbol_table_add(t, SYMBOL_TYPE_VARIABLE, n->token->p.id, hole1 << 1, e);
+		symbol_table_add(t, SYMBOL_TYPE_VARIABLE, n->token->p.id, hole1 << 1, e, n->type == SYM_LOCATION ? true : false);
 		break;
 	case SYM_QUOTE:
 	{
@@ -2842,7 +3493,7 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 			a->pwd = hole1 << 1;
 			pack_string(h, a, n->token->p.id, e);
 		}
-		symbol_table_add(t, SYMBOL_TYPE_CALL, n->token->p.id, here(h, a), e);
+		symbol_table_add(t, SYMBOL_TYPE_CALL, n->token->p.id, here(h, a), e, n->bits & DEFINE_HIDDEN);
 		if(a->in_definition)
 			assembly_error(e, "nested word definition is not allowed");
 		a->in_definition = true;
@@ -2865,7 +3516,6 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 			l = symbol_table_lookup(t, n->value->p.id);
 			if(l) {
 				value = l->value;
-				/**@bug There should actually be two versions of ".set" depending on what we are using it for */
 				if(l->type == SYMBOL_TYPE_CALL) // || l->type == SYMBOL_TYPE_LABEL)
 					value <<= 1;
 			} else {
@@ -2875,6 +3525,9 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 		fix(h, location >> 1, value);
 		break;
 	}
+	case SYM_PWD:
+		a->pwd = literal_or_symbol_lookup(n->token, t, e);
+		break;
 	case SYM_PC:
 		h->pc = literal_or_symbol_lookup(n->token, t, e);
 		update_fence(a, h->pc);
@@ -2895,18 +3548,23 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 			break;
 
 		if(a->built_in_words_defined)
-			assembly_error(e, "Built in words already defined!");
+			assembly_error(e, "built in words already defined");
 		a->built_in_words_defined = true;
 
 		for(unsigned i = 0; built_in_words[i].name; i++) {
-			uint16_t pwd = a->pwd;
-			hole1 = hole(h, a);
-			if(built_in_words[i].inline_bit)
-				pwd |= (DEFINE_INLINE << 13);
-			fix(h, hole1, pwd);
-			a->pwd = hole1 << 1;
-			pack_string(h, a, built_in_words[i].name, e);
-			symbol_table_add(t, SYMBOL_TYPE_CALL, built_in_words[i].name, here(h, a), e);
+			if(!(built_in_words[i].compile))
+				continue;
+
+			if(!built_in_words[i].hidden) {
+				uint16_t pwd = a->pwd;
+				hole1 = hole(h, a);
+				if(built_in_words[i].inline_bit)
+					pwd |= (DEFINE_INLINE << 13);
+				fix(h, hole1, pwd);
+				a->pwd = hole1 << 1;
+				pack_string(h, a, built_in_words[i].name, e);
+			}
+			symbol_table_add(t, SYMBOL_TYPE_CALL, built_in_words[i].name, here(h, a), e, built_in_words[i].hidden);
 			for(size_t j = 0; j < built_in_words[i].len; j++)
 				generate(h, a, built_in_words[i].code[j]);
 			generate(h, a, CODE_EXIT);
@@ -2915,6 +3573,15 @@ static void assemble(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, erro
 	default:
 		fatal("Invalid or unknown type: %u", n->type);
 	}
+}
+
+static bool assembler(h2_t *h, assembler_t *a, node_t *n, symbol_table_t *t, error_t *e)
+{
+	assert(h && a && n && t && e);
+	if(setjmp(e->j))
+		return false;
+	assemble(h, a, n, t, e);
+	return true;
 }
 
 static h2_t *code(node_t *n, symbol_table_t *symbols)
@@ -2931,14 +3598,12 @@ static h2_t *code(node_t *n, symbol_table_t *symbols)
 	a.fence = h->pc;
 
 	e.jmp_buf_valid = 1;
-	if(setjmp(e.j)) {
+	if(!assembler(h, &a, n, t, &e)) {
 		h2_free(h);
 		if(!symbols)
 			symbol_table_free(t);
 		return NULL;
 	}
-
-	assemble(h, &a, n, t, &e);
 
 	if(log_level >= LOG_DEBUG)
 		symbol_table_print(t, stderr);
@@ -2989,6 +3654,7 @@ h2_t *h2_assemble_core(FILE *input, symbol_table_t *symbols)
 
 /* ========================== Main ========================================= */
 
+#ifndef NO_MAIN
 typedef enum {
 	DEFAULT_COMMAND,
 	DISASSEMBLE_COMMAND,
@@ -3040,7 +3706,7 @@ static void debug_note(command_args_t *cmd)
 		note("running for %u cycles (0 = forever)", (unsigned)cmd->steps);
 }
 
-static int assemble_run_command(command_args_t *cmd, FILE *input, FILE *output, symbol_table_t *symbols, bool assemble)
+static int assemble_run_command(command_args_t *cmd, FILE *input, FILE *output, symbol_table_t *symbols, bool assemble, uint16_t *vga_initial_contents)
 {
 	assert(input);
 	assert(output);
@@ -3063,11 +3729,17 @@ static int assemble_run_command(command_args_t *cmd, FILE *input, FILE *output, 
 		return -1;
 
 	io = h2_io_new();
+	assert(VGA_BUFFER_LENGTH <= VT100_MAX_SIZE);
+	for(size_t i = 0; i < VGA_BUFFER_LENGTH; i++) {
+		io->soc->vt100.m[i]          = vga_initial_contents[i] & 0xff;
+		/*io->soc->vt100.attributes[i] = (vga_initial_contents[i] >> 8u) & 0xff;*/
+	}
 
-	/**@todo Endian agnostic serialization of block for read and write */
+	/**@warning This is a lazy way to serialization data and will fail on
+	 * different endianess machines, but this does not matter that much */
 	errno = 0;
 	if((nvram_fh = fopen(cmd->nvram, "rb"))) {
-		fread(io->soc->nvram, CHIP_MEMORY_SIZE, 1, nvram_fh);
+		fread(io->soc->flash.nvram, CHIP_MEMORY_SIZE, 1, nvram_fh);
 		fclose(nvram_fh);
 	} else {
 		debug("nvram file read (from %s) failed: %s", cmd->nvram, strerror(errno));
@@ -3079,7 +3751,7 @@ static int assemble_run_command(command_args_t *cmd, FILE *input, FILE *output, 
 
 	errno = 0;
 	if((nvram_fh = fopen(cmd->nvram, "wb"))) {
-		fwrite(io->soc->nvram, CHIP_MEMORY_SIZE, 1, nvram_fh);
+		fwrite(io->soc->flash.nvram, CHIP_MEMORY_SIZE, 1, nvram_fh);
 		/*memory_save(nvram_fh, io->soc->nvram, CHIP_MEMORY_SIZE);*/
 		fclose(nvram_fh);
 	} else {
@@ -3091,7 +3763,7 @@ static int assemble_run_command(command_args_t *cmd, FILE *input, FILE *output, 
 	return r;
 }
 
-int command(command_args_t *cmd, FILE *input, FILE *output, symbol_table_t *symbols)
+int command(command_args_t *cmd, FILE *input, FILE *output, symbol_table_t *symbols, uint16_t *vga_initial_contents)
 {
 	assert(input);
 	assert(output);
@@ -3100,12 +3772,14 @@ int command(command_args_t *cmd, FILE *input, FILE *output, symbol_table_t *symb
 	case DEFAULT_COMMAND:      /* fall through */
 	case DISASSEMBLE_COMMAND:  return h2_disassemble(input, output, symbols);
 	case ASSEMBLE_COMMAND:     return h2_assemble_file(input, output, symbols);
-	case RUN_COMMAND:          return assemble_run_command(cmd, input, output, symbols, false);
-	case ASSEMBLE_RUN_COMMAND: return assemble_run_command(cmd, input, output, symbols, true);
+	case RUN_COMMAND:          return assemble_run_command(cmd, input, output, symbols, false, vga_initial_contents);
+	case ASSEMBLE_RUN_COMMAND: return assemble_run_command(cmd, input, output, symbols, true,  vga_initial_contents);
 	default:                   fatal("invalid command: %d", cmd->cmd);
 	}
 	return -1;
 }
+
+static const char *nvram_file = FLASH_INIT_FILE;
 
 int h2_main(int argc, char **argv)
 {
@@ -3120,6 +3794,8 @@ int h2_main(int argc, char **argv)
 	cmd.steps = DEFAULT_STEPS;
 	cmd.nvram = nvram_file;
 
+	static uint16_t vga_initial_contents[VGA_BUFFER_LENGTH] = { 0 };
+
 #ifdef _WIN32
 	/* Windows Only: Put the used standard streams into binary mode.
 	 * Text mode sucks. */
@@ -3127,6 +3803,17 @@ int h2_main(int argc, char **argv)
 	_setmode(_fileno(stdout), _O_BINARY);
 	_setmode(_fileno(stderr), _O_BINARY);
 #endif
+
+	{ /* attempt to load initial contents of VGA memory */
+		errno = 0;
+		FILE *vga_init = fopen(VGA_INIT_FILE, "rb");
+		if(vga_init) {
+			memory_load(vga_init, vga_initial_contents, VGA_BUFFER_LENGTH);
+			fclose(vga_init);
+		} else {
+			warning("could not load initial VGA memory file %s: %s", VGA_INIT_FILE, strerror(errno));
+		}
+	}
 
 	for(i = 1; i < argc && argv[i][0] == '-'; i++) {
 
@@ -3206,7 +3893,7 @@ int h2_main(int argc, char **argv)
 		symbols = symbol_table_new();
 done:
 	if(i == argc) {
-		if(command(&cmd, stdin, stdout, symbols) < 0)
+		if(command(&cmd, stdin, stdout, symbols, vga_initial_contents) < 0)
 			fatal("failed to process standard input");
 		return 0;
 	}
@@ -3215,7 +3902,7 @@ done:
 		fatal("more than one file argument given");
 
 	input = fopen_or_die(argv[i], "rb");
-	if(command(&cmd, input, stdout, symbols) < 0)
+	if(command(&cmd, input, stdout, symbols, vga_initial_contents) < 0)
 		fatal("failed to process file: %s", argv[i]);
 	/**@note keeping "input" open until the command exits locks the
 	 * file for longer than is necessary under Windows */
@@ -3231,7 +3918,6 @@ done:
 	return 0;
 }
 
-#ifndef NO_MAIN
 int main(int argc, char **argv)
 {
 	return h2_main(argc, argv);

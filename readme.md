@@ -7,6 +7,8 @@
 | License   | MIT/LGPL                  |
 | Email     | howe.r.j.89@gmail.com     |
 
+![H2 build status](https://travis-ci.org/howerj/forth-cpu.svg?branch=master "Build status of the H2 Assembler")
+
 # Introduction
 
 This project implements a small stack computer tailored to executing Forth
@@ -66,7 +68,7 @@ You will require:
 
 Hardware:
 
-* VGA Monitor 
+* VGA Monitor
 * USB Keyboard (plugs into the Nexys3 USB to PS/2 bridge)
 * [Nexys3][] development board
 
@@ -80,7 +82,7 @@ registration. ISE needs to be on your path:
 
 To make the [C][] based toolchain:
 
-	make h2      
+	make h2
 
 To make a bit file that can be flashed to the target board:
 
@@ -253,19 +255,14 @@ The output register map:
 | Register    | Address | Description                     |
 |-------------|---------|---------------------------------|
 | oUart       | 0x4000  | UART register                   |
-| oLeds       | 0x4001  | LED outputs                     |
-| oTimerCtrl  | 0x4002  | Timer control                   |
-| oVgaCursor  | 0x4003  | VGA Cursor X/Y cursor position  |
-| oVgaCtrl    | 0x4004  | VGA control registers           |
-| o8SegLED    | 0x4005  | 4 x LED 8 Segment display 0     |
-| oIrcMask    | 0x4006  | CPU Interrupt Mask              |
-| oLfsr       | 0x4007  | LFSR Value                      |
-| oMemControl | 0x4008  | Memory Control / Hi Address     |
-| oMemAddrLow | 0x4009  | Memory Lo Address               |
-| oMemDout    | 0x400A  | Memory Data Output              |
-| VGA Memory  | 0xC000  | VGA Memory Start                |
-|             |    -    |                                 |
-|             | 0xFFFF  | VGA Memory End                  |
+| oVT100      | 0x4002  | VT100 Terminal Write            |
+| oLeds       | 0x4004  | LED outputs                     |
+| oTimerCtrl  | 0x4006  | Timer control                   |
+| oMemDout    | 0x4008  | Memory Data Output              |
+| oMemControl | 0x400A  | Memory Control / Hi Address     |
+| oMemAddrLow | 0x400C  | Memory Lo Address               |
+| o7SegLED    | 0x400E  | 4 x LED 8 Segment display       |
+| oIrcMask    | 0x4010  | CPU Interrupt Mask              |
 
 
 The input registers:
@@ -273,14 +270,10 @@ The input registers:
 | Register    | Address | Description                     |
 |-------------|---------|---------------------------------|
 | iUart       | 0x4000  | UART register                   |
-| iSwitches   | 0x4001  | Buttons and switches            |
-| iTimerCtrl  | 0x4002  | Timer control Register          |
-| iTimerDin   | 0x4003  | Current Timer Value             |
-| iVgaTxtDout | 0x4004  | Contents of address oVgaTxtAddr |
-| iPs2        | 0x4005  | PS2 Keyboard Register           |
-| iLfsr       | 0x4006  | LFSR Seed                       |
-| iMemDin     | 0x4007  | Memory Data Input               |
-
+| iVT100      | 0x4002  | Terminal status & PS/2 Keyboard |
+| iSwitches   | 0x4004  | Buttons and switches            |
+| iTimerDin   | 0x4006  | Current Timer Value             |
+| iMemDin     | 0x4008  | Memory Data Input               |
 
 
 The following description of the registers should be read in order and describe
@@ -309,10 +302,27 @@ length, parity bits and stop bits can only be changed with modifications to
 	|  X |  X |TXWE|  X |  X |RXRE|  X |  X |               TXDO                    |
 	+-------------------------------------------------------------------------------+
 
-	TXWE: UART RT Write Enable
+	TXWE: UART TX Write Enable
 	RXRE: UART RX Read Enable
-	TXDO: Uart TX Data Output
+	TXDO: UART TX Data Output
 
+#### oVT100
+
+The VGA Text device emulates a terminal which the user can talk to by writing
+to the oVT100 register. It supports a subset of the [VT100][] terminal
+functionality. The interface behaves much like writing to a UART with the same
+busy and control signals. The input is taken from a [PS/2][] keyboard available
+on the board, this behaves like the RX mechanism of the UART.
+
+	+-------------------------------------------------------------------------------+
+	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
+	+-------------------------------------------------------------------------------+
+	|  X |  X |TXWE|  X |  X |RXRE|  X |  X |               TXDO                    |
+	+-------------------------------------------------------------------------------+
+
+	TXWE: VT100 TX Write Enable
+	RXRE: UART RX Read Enable
+	TXDO: UART TX Data Output
 
 #### oLeds
 
@@ -352,69 +362,6 @@ The timer can be reset by writing to RST.
 	INTE: Interrupt Enable
 	TCMP: Timer Compare Value
 
-#### oVgaCursor
-
-The VGA Text peripheral has a cursor, the cursor position can be changed with
-this register.
-
-	+-------------------------------------------------------------------------------+
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	+-------------------------------------------------------------------------------+
-	|  X |  X |          POSY               |  X |            POSX                  |
-	+-------------------------------------------------------------------------------+
-
-	POSY: VGA Text Cursor Position Y
-	POSX: VGA Text Cursor Position X
-
-
-#### oVgaCtrl
-
-The VGA control register contains bits that affect the behavior of the VGA Text
-display. The VGA peripheral is a text only display, each location in video ram
-gets written out to the display as a character. The display is monochrome, but
-which color is used can be selected with the RED (for red), GRN (for green) and
-BLU (for blue) bits in the oVgaCtrl register.
-
-The CEN bit enables the cursor, and the BLK bit makes the cursor blink. The MOD
-bit changes the cursors shape.
-
-	+-------------------------------------------------------------------------------+
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	+-------------------------------------------------------------------------------+
-	|  X |  X |  X |  X |  X |  X |  X |  X |  X | VEN| CEN| BLK| MOD| RED| GRN| BLU|
-	+-------------------------------------------------------------------------------+
-
-	VEN: VGA Enable
-	CEN: Cursor Enable
-	BLK: Cursor Blink
-	MOD: Cursor Mode
-	RED: Red Enable
-	GRN: Green Enable
-	BLU: Blue Enable
-
-#### o8SegLED
-
-On the [Nexys3][] board there is a bank of 7 segment displays, with a dot
-(8-segment really), which can be used for numeric output. The LED segments
-cannot be directly addressed. Instead the value stored in L8SD is mapped
-to a hexadecimal display value (or a BCD value, but this requires regeneration
-of the SoC and modification of a generic in the VHDL).
-
-The value '0' corresponds to a zero displayed on the LED segment, '15' to an
-'F', etcetera.
-
-There are 4 displays in a row.
-
-	+-------------------------------------------------------------------------------+
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	+-------------------------------------------------------------------------------+
-	|      L8SD0        |       L8SD1       |       L8SD2       |       L8SD3       |
-	+-------------------------------------------------------------------------------+
-
-	L8SD0: LED 8 Segment Display (leftmost display)
-	L8SD1: LED 8 Segment Display
-	L8SD2: LED 8 Segment Display
-	L8SD3: LED 8 Segment Display (right most display)
 
 #### oIrcMask
 
@@ -432,28 +379,24 @@ enabled within it.
 
 	IMSK: Interrupt Mask
 
-#### oLfsr
+#### oMemDout
 
-This register contains the interface the output of the Linear Feedback Shift
-Register ([LFSR][]). It needs an initial non-zero seed value before it will start
-counting, which can be supplied with iLfsr.
+Data to be output to selected address when write enable (WE) issued in
+oMemControl.
 
 	+-------------------------------------------------------------------------------+
 	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
 	+-------------------------------------------------------------------------------+
-	|                               LFSR                                            |
+	|                           Data Ouput                                          |
 	+-------------------------------------------------------------------------------+
-
-	LFSR: Current Linear Feedback Shift Register Value
-
 
 #### oMemControl
 
 This register contains the control registers for the onboard memory on the
 [Nexys3][] board. The board contains three memory devices, two non-volatile
 memory devices and a volatile RAM based device. The two devices accessible by a
-simple SRAM interface (one volatile M45W8MW16, one non-volatile - a 
-NP8P128A13T1760E) are both accessible, the third is an SPI based memory device, 
+simple SRAM interface (one volatile M45W8MW16, one non-volatile - a
+NP8P128A13T1760E) are both accessible, the third is an SPI based memory device,
 NP5Q128A13ESFC0E) and is currently not accessible.
 
 	+-------------------------------------------------------------------------------+
@@ -484,26 +427,29 @@ This is the lower address bits of the RAM.
 	|                           Address Lo                                          |
 	+-------------------------------------------------------------------------------+
 
-#### oMemDout
+#### o7SegLED
 
-Data to be output to selected address when write enable (WE) issued in
-oMemControl.
+On the [Nexys3][] board there is a bank of 7 segment displays, with a dot
+(8-segment really), which can be used for numeric output. The LED segments
+cannot be directly addressed. Instead the value stored in L8SD is mapped
+to a hexadecimal display value (or a BCD value, but this requires regeneration
+of the SoC and modification of a generic in the VHDL).
+
+The value '0' corresponds to a zero displayed on the LED segment, '15' to an
+'F', etcetera.
+
+There are 4 displays in a row.
 
 	+-------------------------------------------------------------------------------+
 	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
 	+-------------------------------------------------------------------------------+
-	|                           Data Ouput                                          |
+	|      L7SD0        |       L7SD1       |       L7SD2       |       L7SD3       |
 	+-------------------------------------------------------------------------------+
 
-#### VGA Memory
-
-The VGA memory occupies the range 0xE000 to 0xFFFF, it can be written to (but
-not read from) like normal memory, except like all I/O registers the lowest bit
-is used for addressing, whereas in normal memory it is not. The lowest byte is
-display on the screen out of the 16-bit value.
-
-The value stored is treated as a [ISO 8859-1 (Latin-1)][] character (which is
-an extended [ASCII][] character set.
+	L7SD0: LED 7 Segment Display (leftmost display)
+	L7SD1: LED 7 Segment Display
+	L7SD2: LED 7 Segment Display
+	L7SD3: LED 7 Segment Display (right most display)
 
 #### iUart
 
@@ -522,6 +468,37 @@ the iUart register, as well as any received bytes.
 	RFFL: UART RX FIFO Full
 	RFEM: UART RX FIFO Empty
 	RXDI: UART RX Data Input
+
+#### iVT100
+
+The iVT100 register works in conjunction with the oVT100 register. The status of
+the FIFO that buffers both transmission and reception of bytes is available in
+the iVT100 register, as well as any received bytes. It works the same as the
+iUart/oUart registers.
+
+	+-------------------------------------------------------------------------------+
+	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
+	+-------------------------------------------------------------------------------+
+	|  X |  X |  X |TFFL|TFEM|  X |RFFL|RFEM|  0 |           ACHR                   |
+	+-------------------------------------------------------------------------------+
+
+	TFFL: VGA VT100 TX FIFO Full
+	TFEM: VGA VT100 TX FIFO Empty
+	RFFL: PS2 VT100 RX FIFO Full
+	RFEM: PS2 VT100 RX FIFO Empty
+	ACHR: New character available on PS2 Keyboard
+
+#### iTimerDin
+
+This register contains the current value of the timers counter.
+
+	+-------------------------------------------------------------------------------+
+	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
+	+-------------------------------------------------------------------------------+
+	|  X |  X |  X |                       TCNT                                     |
+	+-------------------------------------------------------------------------------+
+
+	TCNT: Timer Counter Value
 
 #### iSwitches
 
@@ -548,75 +525,11 @@ have to be further processed once read in from these registers.
 	BCNT: Button Center
 	TSWI: Two Position Switches
 
-#### iTimerCtrl
-
-This register contains the contents stored in oTimerCtrl.
-
-	+-------------------------------------------------------------------------------+
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	+-------------------------------------------------------------------------------+
-	| TE | RST|INTE|                      TCMP                                      |
-	+-------------------------------------------------------------------------------+
-
-	TE:   Timer Enable
-	RST:  Timer Reset
-	INTE: Interrupt Enable
-	TCMP: Timer Compare Value
-
-#### iTimerDin
-
-This register contains the current value of the timers counter.
-
-	+-------------------------------------------------------------------------------+
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	+-------------------------------------------------------------------------------+
-	|  X |  X |  X |                       TCNT                                     |
-	+-------------------------------------------------------------------------------+
-
-	TCNT: Timer Counter Value
-
-#### iVgaTxtDout
-
-This register contains the value of the video memory index by oVgaTxtAddr. The
-mechanism for reading from VGA ram does not work correctly at the moment.
-
-	+-------------------------------------------------------------------------------+
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	+-------------------------------------------------------------------------------+
-	|                                     VRDO                                      |
-	+-------------------------------------------------------------------------------+
-
-	VRDO: VGA RAM Data Output
-
-#### iPs2
-
-This register contains the interface to the PS/2 keyboard. If PS2N is set then
-an [ASCII][] character is present in ACHR. Both PS2N and ACHR will be cleared.
-
-	+-------------------------------------------------------------------------------+
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	+-------------------------------------------------------------------------------+
-	|  X |  X |  X |  X |  X |  X |  X |PS2N|  X |              ACHR                |
-	+-------------------------------------------------------------------------------+
-
-	PS2N: New character available on PS2 Keyboard
-	ACHR: ASCII Character
-
-#### iLfsr
-
-This register contains the interface to the input of the Linear Feedback Shift
-Register ([LFSR][]). It needs an initial non-zero seed value before it will start
-counting, the LFSR can be used to generate pseudo random numbers.
-
-	|-------------------------------------------------------------------------------|
-	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
-	|-------------------------------------------------------------------------------|
-	|                               LFSR                                            |
-	|-------------------------------------------------------------------------------|
-
-	LFSR: Linear Feedback Shift Register Seed Value
-
 #### iMemDin
+
+Memory input, either from the SRAM or Flash, indexed by oMemControl and
+oMemAddrLow. When reading from flash this might actually be status information
+or information from the query table.
 
 	+-------------------------------------------------------------------------------+
 	| 15 | 14 | 13 | 12 | 11 | 10 |  9 |  8 |  7 |  6 |  5 |  4 |  3 |  2 |  1 |  0 |
@@ -666,7 +579,7 @@ program (see [h2.c][]). This simulator complements the [VHDL][] test bench
 To build it a [C][] compiler is needed, the build target "h2" will build the
 executable:
 
-	make h2     
+	make h2
 
 And it can be run on the source file [h2.fth][] with the make target:
 
@@ -726,13 +639,14 @@ A rough [EBNF][] grammar for the language is as follows:
 	Program     := Statement* EOF
 	Statement   :=   Label | Branch | 0Branch | Call | Literal | Instruction
 		       | Identifier | Constant | Variable | Location | Definition | If
-		       | Begin | Char | Set | Pc | Break | Mode | String | BuiltIn
+		       | Begin | Char | Set | Pc | Pwd | Break | Mode | String | BuiltIn
 	Label       := Identifier ";"
 	Branch      := "branch"  ( Identifier | Literal )
 	0Branch     := "0branch" ( Identifier | Literal )
 	Call        := "call"    ( Identifier | Literal )
 	Set         := ".set"    ( Identifier | Literal ) ( Identifier | Literal )
 	Pc          := ".pc"     ( Identifier | Literal )
+	Pwd         := ".pwd"    ( Identifier | Literal )
 	Break       := ".break"
 	BuiltIn     := ".built-in"
 	Mode        := ".mode"      Literal
@@ -749,7 +663,7 @@ A rough [EBNF][] grammar for the language is as follows:
 	String      := '"' SChar* '"'
 	Char        := "[char]" ASCII ","
 	Number      := Hex | Decimal
-	Decimal     := "0" ... "9" ("0" ... "9")* 
+	Decimal     := "0" ... "9" ("0" ... "9")*
 	Hex         := "$" HexDigit HexDigit*
 	HexDigit    := ( "a" ... "f" | "A" ... "F" )
 	SChar       := Any character except quote
@@ -762,7 +676,8 @@ lexer to prevent this.
 
 The assembler the following directives:
 
-	.pc        Set the program counter
+	.pc        Set the program counter 
+	.pwd       Set the previous word pointer
 	.allocate  Increment the program counter
 	.set       Set location in memory
 	.mode      Change compiler mode
@@ -878,7 +793,7 @@ The simulator in C implements the H2 core and most of the SoC. The IO for the
 simulator is not cycle accurate (and most likely will never be), but can be
 used for running and debugging programs with results that are very similar to
 how the hardware behaves. This is much faster than rebuilding the bit file used
-to flash the [FPGA][]. 
+to flash the [FPGA][].
 
 ## Debugger
 
@@ -1016,7 +931,7 @@ Below is an image of a running session in the GUI simulator:
 
 Building can be done with
 
-	make gui     
+	make gui
 
 And running:
 
@@ -1431,6 +1346,14 @@ description and flashy GIFs
 * Put a help file, and extra source, in some Forth blocks, which could then be
   loaded onto the Nexys3.
 * Add notes about picocom, and setting up the hardware:
+* Add a [Wishbone interface][] for each component
+* Put the project up on [opencores][]
+* It should be possible to turn [h2.c][] into a Forth interpreter usable in
+a hosted environment. Some of the remaining instructions could be used for
+function calls and floating point operations and the "uint16\_t" would have to
+be changed to "uintptr\_t". As the interpreter is so small a Forth to "C"
+compiler could just spit out a copy of the interpreter. It should make for
+a very compact system. 
 
 <!-- -->
 
@@ -1502,6 +1425,8 @@ description and flashy GIFs
 [pandoc]: https://pandoc.org
 [picocom]: https://github.com/npat-efault/picocom
 [Gforth]: https://www.gnu.org/software/gforth/
+[opencores]: https://opencores.org
+[VT100]: https://en.wikipedia.org/wiki/VT100
 
 <!--
 

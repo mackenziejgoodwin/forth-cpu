@@ -9,10 +9,6 @@
 # file for the FPGA. Type "make help" at the command line for a
 # list of options
 #
-# @todo The options relating to building the bit file (synthesis,
-# implementation and bitfile) need improving in terms of their
-# dependencies.
-#
 
 NETLIST=top
 #TIME=time -p 
@@ -25,11 +21,12 @@ GUI_LDFLAGS = -lfreeglut -lopengl32 -lm
 DF=
 EXE=.exe
 
-.PHONY: h2 gui 
+.PHONY: h2 gui text block
 
-h2:    h2.exe
-gui:   gui.exe
-text:  text.exe
+h2:     h2.exe
+gui:    gui.exe
+text:   text.exe
+block:  block.exe
 
 else # assume unixen
 GUI_LDFLAGS = -lglut -lGL -lm 
@@ -37,7 +34,7 @@ DF=./
 EXE=
 endif
 
-.PHONY: simulation viewer synthesis bitfile upload clean run gui-run
+.PHONY: simulation viewer synthesis bitfile upload clean run gui-run 
 
 ## Remember to update the synthesis section as well
 SOURCES = \
@@ -46,9 +43,9 @@ SOURCES = \
 	uart.vhd \
 	kbd.vhd \
 	vga.vhd \
-	irqh.vhd \
 	h2.vhd \
-	cpu.vhd \
+	ram.vhd \
+	core.vhd \
 	led.vhd 
 
 OBJECTS = ${SOURCES:.vhd=.o}
@@ -97,17 +94,29 @@ documentation: readme.pdf readme.htm
 
 ## Virtual Machine and UART communications =================================
 
-CFLAGS=-Wall -Wextra -O2
+CFLAGS=-Wall -Wextra -O2 -g
 
 h2${EXE}: h2.c h2.h
-	${CC} ${CFLAGS} -std=c99 $^ -o $@
+	${CC} ${CFLAGS} -std=c99 $< -o $@
 
 disassemble: h2${EXE} h2.fth
 	${DF}h2 -S h2.sym -a h2.fth > h2.hex
 	${DF}h2 -L h2.sym h2.hex | awk '{printf "%04x %s\n", NR-1, $$0;}' | less -
 
-run: h2${EXE} h2.fth
-	${DF}h2 -s 0 -R h2.fth
+block${EXE}: block.c
+	${CC} ${CFLAGS} -std=c99 $< -o $@
+
+h2.sym: h2.hex
+
+nvram.blk: nvram.txt h2.sym block${EXE} 
+	${DF}block${EXE} < nvram.txt >  $@
+	${DF}block${EXE} < h2.sym    >> $@
+
+# %.blk: %.txt block${EXE}
+#	${DF}block${EXE} < $< > $@
+
+run: h2${EXE} h2.fth nvram.blk
+	${DF}h2 -R h2.fth
 
 h2nomain.o: h2.c h2.h
 	${CC} ${CFLAGS} -std=c99 -DNO_MAIN  $< -c -o $@
@@ -118,13 +127,13 @@ gui.o: gui.c h2.h
 gui${EXE}: h2nomain.o gui.o
 	${CC} ${CFLAGS} $^ ${GUI_LDFLAGS} -o $@
 
-gui-run: gui${EXE} h2.hex
-	${DF}$^
+gui-run: gui${EXE} h2.hex nvram.blk text.hex
+	${DF}$< h2.hex
 
 text${EXE}: text.c
 	${CC} ${CFLAGS} -std=c99 $< -o $@
 
-text.bin: text${EXE}
+text.hex: text${EXE}
 	${DF}$< -g > $@
 
 ## Simulation ==============================================================
@@ -132,13 +141,14 @@ text.bin: text${EXE}
 %.o: %.vhd
 	ghdl -a $<
 
-irqh.o: util.o
+ram.o: util.o
 led.o: util.o led.vhd
-vga.o: util.o vga.vhd text.bin font.bin
-cpu.o: util.o h2.o irqh.o cpu.vhd h2.hex
+kbd.o: util.o kbd.vhd
+vga.o: util.o vga.vhd text.hex font.bin
+core.o: util.o h2.o core.vhd h2.hex
 uart.o: util.o uart.vhd
-top.o: util.o timer.o cpu.o uart.o vga.o kbd.o led.o top.vhd 
-tb.o: top.o tb.vhd 
+top.o: util.o timer.o core.o uart.o vga.o kbd.o led.o ram.o top.vhd 
+tb.o: top.o util.o tb.vhd 
 
 tb: ${OBJECTS} tb.o
 	ghdl -e tb
@@ -276,7 +286,10 @@ clean:
 	      top.unroutes top.xpi top_par.xrpt top.twx top.nlf design.bit top_map.mrp 
 	@rm -vrf _xmsgs reports tmp xlnx_auto_0_xdb
 	@rm -vrf _xmsgs reports tmp xlnx_auto_0_xdb
-	@rm -vrf h2${EXE} gui${EXE}
+	@rm -vrf h2${EXE} gui${EXE} block${EXE} text${EXE}
+	@rm -vrf text.bin h2.hex text.hex
+	@rm -vrf *.pdf *.htm
+	@rm -vrf *.blk *.sym
 	@rm -vf usage_statistics_webtalk.html
 	@rm -vf mem_h2.binary mem_h2.hexadecimal
 
