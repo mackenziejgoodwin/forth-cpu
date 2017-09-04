@@ -200,6 +200,7 @@ tmp/top.xst: tmp tmp/_xmsgs tmp/top.lso tmp/top.lso
 	    echo "-ifn tmp/top.prj"; \
 	    echo "-ofn top"; \
 	    echo "-p xc6slx16-csg324-3"; \
+	    echo "-keep_hierarchy no"; \
 	    echo "-top top"; \
 	    echo "-opt_mode speed"; \
 	    echo "-opt_level 2" \

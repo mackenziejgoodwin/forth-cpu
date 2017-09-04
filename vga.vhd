@@ -343,15 +343,29 @@ architecture rtl of vt100 is
 	signal akk_init:    std_logic := '0';
 	signal n_o:         unsigned(number - 1 downto 0) := (others => '0');
 	signal akk_char_o:  std_logic_vector(char'range)  := (others => '0');
+
+	signal char_o:  std_logic_vector(char'range)      := (others => '0');
+	signal we_o:    std_logic                         := '0';
 begin
+	delay: work.util.reg
+		generic map(N => char'length + 1)
+		port map(
+			clk             => clk,
+			rst             => rst,
+			di(char'high+1) => we,
+			di(char'range)  => char,
+			we              => '1',
+			do(char'high+1) => we_o,
+			do(char'range)  => char_o);
+
 	accumulator_0: work.vga_pkg.accumulator
 		generic map(N => number)
 		port map(
 			clk    => clk,
 			rst    => rst,
-			we     => we,
+			we     => we_o,
 			init   => akk_init,
-			char   => char,
+			char   => char_o,
 			char_o => akk_char_o,
 			done_o => akk_done_o,
 			ready  => akk_ready_o,
@@ -451,7 +465,7 @@ begin
 	-- HVP - Horizontal and Vertical Position - CSI n ; m 'f'
 	-- The cursor commands are also supported: CUU, CUD, CUF,
 	-- CUB, CNL, CPL and CHA
-	fsm: process(state_c, c_c, n1_c, n2_c, we, char,
+	fsm: process(state_c, c_c, n1_c, n2_c, we_o, char_o,
 		x_c, y_c, addr, y_plus_one_limited, y_plus_one,
 		x_plus_one_limited, x_plus_one, n_o, akk_char_o,
 		akk_done_o, y_overflow, x_overflow, count_c,
@@ -490,8 +504,8 @@ begin
 			conceal_n <= false;
 		elsif state_c = ACCEPT then
 			-- c_n <= (others => '0');
-			if we = '1' then
-				c_n   <= unsigned(char);
+			if we_o = '1' then
+				c_n   <= unsigned(char_o);
 				state_n <= NORMAL;
 			end if;
 		elsif state_c = NORMAL then
@@ -522,8 +536,8 @@ begin
 			x_n     <= x_plus_one;
 			state_n <= WRAP;
 		elsif state_c = CSI then
-			if we = '1' then
-				c_n <= unsigned(char);
+			if we_o = '1' then
+				c_n <= unsigned(char_o);
 				state_n <= COMMAND;
 			end if;
 		elsif state_c = COMMAND then
@@ -548,29 +562,29 @@ begin
 			case akk_char_o is
 			when x"41" => -- CSI n 'A' : CUU Cursor up
 				y_n         <= y_minus_one_limited;
-				exit_repeat := WRITE;
+				state_n     <= WRITE;
 				repeat      := true;
 			when x"42" => -- CSI n 'B' : CUD Cursor Down
 				y_n         <= y_plus_one_limited;
-				exit_repeat := LIMIT;
+				state_n     <= LIMIT;
 				repeat      := true;
 			when x"43" => -- CSI n 'C' : CUF Cursor Forward
 				x_n         <= x_plus_one_limited;
-				exit_repeat := LIMIT;
+				state_n     <= LIMIT;
 				repeat      := true;
 			when x"44" => -- CSI n 'D' : CUB Cursor Back
 				x_n         <= x_minus_one_limited;
-				exit_repeat := WRITE;
+				state_n     <= WRITE;
 				repeat      := true;
 			when x"45" => -- CSI n 'E'
 				y_n         <= y_minus_one_limited;
 				x_n         <= (others => '0');
-				exit_repeat := WRITE;
+				state_n     <= WRITE;
 				repeat      := true;
 			when x"46" => -- CSI n 'F'
 				y_n         <= y_plus_one_limited;
 				x_n         <= (others => '0');
-				exit_repeat := LIMIT;
+				state_n     <= LIMIT;
 				repeat      := true;
 			when x"47" => -- CSI n 'G' : CHA Cursor Horizontal Absolute
 				x_n      <= n1_c(x_n'range);
@@ -608,10 +622,9 @@ begin
 			end case;
 
 			if repeat then
-				if n1_c = 0 then
-					state_n <= exit_repeat;
-				else
-					n1_n <= n1_c - 1;
+				if n1_c /= 0 then
+					state_n <= COMMAND1;
+					n1_n    <= n1_c - 1;
 				end if;
 			end if;
 		elsif state_c = NUMBER2 then
