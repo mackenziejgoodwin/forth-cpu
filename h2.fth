@@ -1014,7 +1014,7 @@ irq:
 
 : set-order ( widn ... wid1 n -- : set the current search order )
 	dup [-1]  = if drop forth-wordlist 1 set-order exit then
-	dup #vocs > if 49 -throw then
+	dup #vocs 1- > if 49 -throw then
 	context swap for aft tuck ! cell+ then next 0 swap ! ;
 
 \ : root  -1 set-order ; \ should contain set-order, forth-wordlist, forth, and words
@@ -1166,7 +1166,8 @@ bit discarded, like normal memory )
 : .failed failed print ; hidden
 : boot ( -- )
 	0 0 $8000 transfer
-	0 block c@ printable? if
+	0 block c@ printable? ( should check entire block is printable )
+	if 
 		0 load
 	else
 		1 -throw
@@ -1174,6 +1175,16 @@ bit discarded, like normal memory )
 
 start:
 .set entry start
+	0 sgr
+	[char] a emit
+	[char] b emit
+	red color
+	[char] c emit
+	[char] d emit
+	blue color
+	[char] e emit
+	[char] f emit
+
 	_boot @execute  ( _boot contains zero by default, does nothing )
 	hi
 	cpu-id segments!
@@ -1181,6 +1192,13 @@ start:
 	' boot catch if .failed else .ok then
 	\ loaded @ if 1 list then
 	\ login 0 load 1 list
+
+	[char] a emit
+	[char] b emit
+	blue color
+	[char] c emit
+
+
 	branch quitLoop ( jump to main interpreter loop if _boot returned )
 
 ( ==================== Startup Code ================================== )

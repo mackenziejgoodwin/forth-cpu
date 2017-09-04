@@ -415,20 +415,20 @@ begin
 			o_vga             =>  o_vga);
 	end block;
 
-	-- Subset of commands implemented:
-	-- ED  - Erase Display, CSI n 'J'
-	-- RIS - Erase Display, ESC 'c'
-	-- SGR - Select Graphic Rendition - for colors, CSI n 'm'
-	-- HVP - Horizontal and Vertical Position - CSI n ; m 'f'
-	-- The cursor commands are also supported: CUU, CUD, CUF,
-	-- CUB, CNL, CPL and CHA
-	fsm: process(clk, rst)
-		variable limit_value: unsigned(addr'range) := (others => '0');
-		variable repeat:      boolean    := false;
-		variable exit_repeat: state_type := RESET;
+	next_state: process(clk, rst)
 	begin
 		if rst = '1' then
-			state_c <= RESET;
+			x_c       <= (others => '0');
+			y_c       <= (others => '0');
+			c_c       <= (others => '0');
+			count_c   <= (others => '0');
+			limit_c   <= (others => '0');
+			state_c   <= RESET;
+			n1_c      <= (others => '0');
+			n2_c      <= (others => '0');
+			attr_c    <= attr_default;
+			ctl_c     <= ctl_default;
+			conceal_c <= false;
 		elsif rising_edge(clk) then
 			x_c       <= x_n;
 			y_c       <= y_n;
@@ -438,247 +438,278 @@ begin
 			state_c   <= state_n;
 			n1_c      <= n1_n;
 			n2_c      <= n2_n;
-			data_we   <= '0';
-			cursor_we <= '0';
-			akk_init  <= '0';
 			attr_c    <= attr_n;
 			ctl_c     <= ctl_n;
 			conceal_c <= conceal_n;
+		end if;
+	end process;
 
-			if state_c = RESET then
-				n1_n      <= (others => '0');
-				n2_n      <= (others => '0');
+	-- Subset of commands implemented:
+	-- ED  - Erase Display, CSI n 'J'
+	-- RIS - Erase Display, ESC 'c'
+	-- SGR - Select Graphic Rendition - for colors, CSI n 'm'
+	-- HVP - Horizontal and Vertical Position - CSI n ; m 'f'
+	-- The cursor commands are also supported: CUU, CUD, CUF,
+	-- CUB, CNL, CPL and CHA
+	fsm: process(state_c, c_c, n1_c, n2_c, we, char,
+		x_c, y_c, addr, y_plus_one_limited, y_plus_one,
+		x_plus_one_limited, x_plus_one, n_o, akk_char_o,
+		akk_done_o, y_overflow, x_overflow, count_c,
+		attr_c, conceal_c, ctl_c, x_minus_one_limited,
+		y_minus_one_limited, limit_c)
+		variable limit_value: unsigned(addr'range) := (others => '0');
+		variable repeat:      boolean    := false;
+		variable exit_repeat: state_type := RESET;
+	begin
+		data_we   <= '0';
+		cursor_we <= '0';
+		akk_init  <= '0';
+		n1_n      <= n1_c;
+		n2_n      <= n2_c;
+		y_n       <= y_c;
+		x_n       <= x_c;
+		state_n   <= state_c;
+		attr_n    <= attr_c;
+		conceal_n <= conceal_c;
+		ctl_n     <= ctl_c;
+		limit_n   <= limit_c;
+		c_n       <= c_c;
+		count_n   <= count_c;
+
+		if state_c = RESET then
+			n1_n      <= (others => '0');
+			n2_n      <= (others => '0');
+			x_n       <= (others => '0');
+			y_n       <= (others => '0');
+			c_n       <= (others => '0');
+			count_n   <= (others => '0');
+			limit_n   <= (others => '0');
+			state_n   <= ACCEPT;
+			attr_n    <= attr_default;
+			ctl_n     <= ctl_default;
+			conceal_n <= false;
+		elsif state_c = ACCEPT then
+			-- c_n <= (others => '0');
+			if we = '1' then
+				c_n   <= unsigned(char);
+				state_n <= NORMAL;
+			end if;
+		elsif state_c = NORMAL then
+			case c_c is
+			when tab =>
+				x_n     <= (x_c and "1111000") + 8;
+				state_n <= ERASING;
+				c_n     <= blank;
+				limit_value := unsigned(addr and "1111111111000") + 8;
+				limit_n <= limit_value(limit_n'high + 3 downto limit_n'low + 3);
+				count_n <= unsigned(addr);
+			when cr =>
+				y_n     <= y_plus_one;
+				state_n <= WRAP;
+			when lf =>
+				x_n     <= (others => '0');
+				state_n <= WRITE;
+			when backspace =>
+				x_n     <= x_minus_one_limited;
+				state_n <= WRITE;
+			when esc =>
+				state_n <= CSI;
+			when others =>
+				data_we <= '1';
+				state_n <= ADVANCE;
+			end case;
+		elsif state_c = ADVANCE then
+			x_n     <= x_plus_one;
+			state_n <= WRAP;
+		elsif state_c = CSI then
+			if we = '1' then
+				c_n <= unsigned(char);
+				state_n <= COMMAND;
+			end if;
+		elsif state_c = COMMAND then
+			case c_c is
+			when ascii_c => -- @todo Erase screen as well
+				state_n <= RESET;
+			when lsqb =>
+				state_n  <= NUMBER1;
+				akk_init <= '1';
+			when others => -- Error
+				state_n <= ACCEPT;
+			end case;
+		elsif state_c = NUMBER1 then
+			if akk_done_o = '1' then
+				state_n <= COMMAND1;
+				n1_n    <= n_o(n1_n'range);
+			end if;
+		elsif state_c = COMMAND1 then
+
+			repeat := false;
+
+			case akk_char_o is
+			when x"41" => -- CSI n 'A' : CUU Cursor up
+				y_n         <= y_minus_one_limited;
+				exit_repeat := WRITE;
+				repeat      := true;
+			when x"42" => -- CSI n 'B' : CUD Cursor Down
+				y_n         <= y_plus_one_limited;
+				exit_repeat := LIMIT;
+				repeat      := true;
+			when x"43" => -- CSI n 'C' : CUF Cursor Forward
+				x_n         <= x_plus_one_limited;
+				exit_repeat := LIMIT;
+				repeat      := true;
+			when x"44" => -- CSI n 'D' : CUB Cursor Back
+				x_n         <= x_minus_one_limited;
+				exit_repeat := WRITE;
+				repeat      := true;
+			when x"45" => -- CSI n 'E'
+				y_n         <= y_minus_one_limited;
+				x_n         <= (others => '0');
+				exit_repeat := WRITE;
+				repeat      := true;
+			when x"46" => -- CSI n 'F'
+				y_n         <= y_plus_one_limited;
+				x_n         <= (others => '0');
+				exit_repeat := LIMIT;
+				repeat      := true;
+			when x"47" => -- CSI n 'G' : CHA Cursor Horizontal Absolute
+				x_n      <= n1_c(x_n'range);
+				state_n  <= LIMIT;
+			when x"4a" => -- CSI n 'J'
 				x_n       <= (others => '0');
 				y_n       <= (others => '0');
-				c_n       <= (others => '0');
-				count_n   <= (others => '0');
-				limit_n   <= (others => '0');
-				state_n   <= ACCEPT;
-				attr_n    <= attr_default;
-				ctl_n     <= ctl_default;
-				conceal_n <= false;
-			elsif state_c = ACCEPT then
-				if we = '1' then
-					c_n   <= unsigned(char);
-					state_n <= NORMAL;
-				end if;
-			elsif state_c = NORMAL then
-				case c_c is
-				when tab =>
-					x_n     <= (x_c and "1111000") + 8;
-					state_n <= ERASING;
-					c_n     <= blank;
-					limit_value := unsigned(addr and "1111111111000") + 8;
-					limit_n <= limit_value(limit_n'high + 3 downto limit_n'low + 3);
-					count_n <= unsigned(addr);
-				when cr =>
-					y_n     <= y_plus_one;
-					state_n <= WRAP;
-				when lf =>
-					x_n     <= (others => '0');
-					state_n <= WRITE;
-				when backspace =>
-					x_n     <= x_minus_one_limited;
-					state_n <= WRITE;
-				when esc =>
-					state_n <= CSI;
-				when others =>
-					data_we <= '1';
-					state_n <= ADVANCE;
-				end case;
-			elsif state_c = ADVANCE then
-				x_n     <= x_plus_one;
-				state_n <= WRAP;
-			elsif state_c = CSI then
-				if we = '1' then
-					c_n <= unsigned(char);
-					state_n <= COMMAND;
-				end if;
-			elsif state_c = COMMAND then
-				case c_c is
-				when ascii_c => -- @todo Erase screen as well
-					state_n <= RESET;
-				when lsqb =>
-					state_n  <= NUMBER1;
-					akk_init <= '1';
-				when others => -- Error
-					state_n <= ACCEPT;
-				end case;
-			elsif state_c = NUMBER1 then
-				if akk_done_o = '1' then
-					state_n <= COMMAND1;
-					n1_n    <= n_o(n1_n'range);
-				end if;
-			elsif state_c = COMMAND1 then
-
-				repeat := false;
-
-				case akk_char_o is
-				when x"41" => -- CSI n 'A' : CUU Cursor up
-					y_n         <= y_minus_one_limited;
-					exit_repeat := WRITE;
-					repeat      := true;
-				when x"42" => -- CSI n 'B' : CUD Cursor Down
-					y_n         <= y_plus_one_limited;
-					exit_repeat := LIMIT;
-					repeat      := true;
-				when x"43" => -- CSI n 'C' : CUF Cursor Forward
-					x_n         <= x_plus_one_limited;
-					exit_repeat := LIMIT;
-					repeat      := true;
-				when x"44" => -- CSI n 'D' : CUB Cursor Back
-					x_n         <= x_minus_one_limited;
-					exit_repeat := WRITE;
-					repeat      := true;
-				when x"45" => -- CSI n 'E'
-					y_n         <= y_minus_one_limited;
-					x_n         <= (others => '0');
-					exit_repeat := WRITE;
-					repeat      := true;
-				when x"46" => -- CSI n 'F'
-					y_n         <= y_plus_one_limited;
-					x_n         <= (others => '0');
-					exit_repeat := LIMIT;
-					repeat      := true;
-				when x"47" => -- CSI n 'G' : CHA Cursor Horizontal Absolute
-					x_n      <= n1_c(x_n'range);
-					state_n  <= LIMIT;
-				when x"4a" => -- CSI n 'J'
-					x_n       <= (others => '0');
-					y_n       <= (others => '0');
-					cursor_we <= '1';
-					state_n   <= ERASING;
-					c_n       <= blank;
-					count_n   <= (others => '0');
-					limit_n   <= "1000000000";
-				when x"3b" => -- ESC n ';' ...
-					state_n <= NUMBER2;
-					akk_init <= '1';
-				when x"6d" => -- CSI n 'm' : SGR
-					state_n <= ATTRIB1;
-				when x"53" => -- CSI n 'S' : scroll up
-					ctl_n(4) <= '0';
-					state_n  <= WRITE;
-				when x"54" => -- CSI n 'T' : scroll down
-					ctl_n(4) <= '1';
-					state_n  <= WRITE;
-				-- when x"3f" => -- ESC ? 25 (l,h)
-				--	state_n  <= NUMBER2;
-				--	akk_init <= '1';
-
-				-- @warning This is an extension! It is for setting the
-				-- control lines of the VGA module directly.
-				when x"78" => -- ESC n 'x' : Set VGA control registers directly
-					ctl_n    <= n1_c(ctl_n'range);
-					state_n  <= WRITE;
-				when others => -- Error
-					state_n <= ACCEPT;
-				end case;
-
-				if repeat then
-					if n1_c = 0 then
-						state_n <= exit_repeat;
-					else
-						n1_n <= n1_c - 1;
-					end if;
-				end if;
-			elsif state_c = NUMBER2 then
-				if akk_done_o = '1' then
-					state_n <= COMMAND2;
-					n2_n    <= n_o(n2_n'range);
-				end if;
-			elsif state_c = COMMAND2 then
-				case akk_char_o is
-				when x"66" => -- f
-					y_n       <= n1_c(y_n'range) - 1;
-					x_n       <= n2_c(x_n'range) - 1;
-					cursor_we <= '1';
-					state_n   <= LIMIT;
-				when x"48" => -- H
-					y_n       <= n1_c(y_n'range) - 1;
-					x_n       <= n2_c(x_n'range) - 1;
-					cursor_we <= '1';
-					state_n   <= LIMIT;
-				when x"6d" => -- ESC n ';' m 'm'
-					state_n <= ATTRIB1;
-				when others =>
-					state_n <= ACCEPT;
-				end case;
-			elsif state_c = WRAP then
-				if x_overflow then
-					x_n <= (others => '0');
-					y_n <= y_plus_one;
-				elsif y_overflow then
-					x_n     <= (others => '0');
-					y_n     <= (others => '0');
-					state_n <= ERASING;
-					c_n     <= blank;
-					count_n <= (others => '0');
-					limit_n <= "1000000000";
-				else
-					state_n <= WRITE;
-				end if;
-			elsif state_c = LIMIT then
-				if x_overflow then
-					x_n <= to_unsigned(width - 1, x_n'high + 1);
-				end if;
-				if y_overflow then
-					y_n <= to_unsigned(height - 1, y_n'high + 1);
-				end if;
-				state_n <= WRITE;
-			elsif state_c = WRITE then
-				state_n   <= ACCEPT;
 				cursor_we <= '1';
-			elsif state_c = ERASING then
-				if count_c(limit_c'high + 3 downto limit_c'low + 3) /= limit_c then
-					count_n <= count_c + 1;
-					data_we <= '1';
-				else
-					state_n <= WRAP;
-				end if;
-			elsif state_c = ATTRIB1 then
-				case n1_c is
-				when x"00"  =>
-					attr_n    <= attr_default;
-					conceal_n <= false;
-				when x"01"  => attr_n(6) <= '1'; -- bold
-				when x"07"  => attr_n(7) <= '1'; -- reverse video
-				when x"08"  => conceal_n <= true;
+				state_n   <= ERASING;
+				c_n       <= blank;
+				count_n   <= (others => '0');
+				limit_n   <= "1000000000";
+			when x"3b" => -- ESC n ';' ...
+				state_n <= NUMBER2;
+				akk_init <= '1';
+			when x"6d" => -- CSI n 'm' : SGR
+				state_n <= ATTRIB1;
+			when x"53" => -- CSI n 'S' : scroll up
+				ctl_n(4) <= '0';
+				state_n  <= WRITE;
+			when x"54" => -- CSI n 'T' : scroll down
+				ctl_n(4) <= '1';
+				state_n  <= WRITE;
+			-- when x"3f" => -- ESC ? 25 (l,h)
+			--	state_n  <= NUMBER2;
+			--	akk_init <= '1';
 
-				-- when x"6c" => if n2_c = x"19" then ctl_n(2) <= '0'; end if; -- l, hide cursor
-				-- when x"68" => if n2_c = x"19" then ctl_n(2) <= '1'; end if; -- h, show cursor
-
-				-- @todo This should make the _text_ blink, not the cursor!
-				when x"05"  => ctl_n(1) <= '1'; -- blink slow
-				when x"19"  => ctl_n(1) <= '0'; -- blink off
-
-				when x"1E"  => attr_n(5 downto 3) <= "000"; -- 30
-				when x"1F"  => attr_n(5 downto 3) <= "001";
-				when x"20"  => attr_n(5 downto 3) <= "010";
-				when x"21"  => attr_n(5 downto 3) <= "011";
-				when x"22"  => attr_n(5 downto 3) <= "100";
-				when x"23"  => attr_n(5 downto 3) <= "101";
-				when x"24"  => attr_n(5 downto 3) <= "110";
-				when x"25"  => attr_n(5 downto 3) <= "111";
-
-				when x"28"  => attr_n(2 downto 0) <= "000"; -- 40
-				when x"29"  => attr_n(2 downto 0) <= "001";
-				when x"2A"  => attr_n(2 downto 0) <= "010";
-				when x"2B"  => attr_n(2 downto 0) <= "011";
-				when x"2C"  => attr_n(2 downto 0) <= "100";
-				when x"2D"  => attr_n(2 downto 0) <= "101";
-				when x"2E"  => attr_n(2 downto 0) <= "110";
-				when x"2F"  => attr_n(2 downto 0) <= "111";
-				when others =>
-				end case;
-				state_n <= ATTRIB2;
-			elsif state_c = ATTRIB2 then
-				-- @todo Implement two attributes in a row
+			-- @warning This is an extension! It is for setting the
+			-- control lines of the VGA module directly.
+			when x"78" => -- ESC n 'x' : Set VGA control registers directly
+				ctl_n    <= n1_c(ctl_n'range);
+				state_n  <= WRITE;
+			when others => -- Error
 				state_n <= ACCEPT;
-			else
-				state_n <= RESET;
-				report "Invalid State" severity failure;
+			end case;
+
+			if repeat then
+				if n1_c = 0 then
+					state_n <= exit_repeat;
+				else
+					n1_n <= n1_c - 1;
+				end if;
 			end if;
+		elsif state_c = NUMBER2 then
+			if akk_done_o = '1' then
+				state_n <= COMMAND2;
+				n2_n    <= n_o(n2_n'range);
+			end if;
+		elsif state_c = COMMAND2 then
+			case akk_char_o is
+			when x"66" => -- f
+				y_n       <= n1_c(y_n'range) - 1;
+				x_n       <= n2_c(x_n'range) - 1;
+				cursor_we <= '1';
+				state_n   <= LIMIT;
+			when x"48" => -- H
+				y_n       <= n1_c(y_n'range) - 1;
+				x_n       <= n2_c(x_n'range) - 1;
+				cursor_we <= '1';
+				state_n   <= LIMIT;
+			when x"6d" => -- ESC n ';' m 'm'
+				state_n <= ATTRIB1;
+			when others =>
+				state_n <= ACCEPT;
+			end case;
+		elsif state_c = WRAP then
+			if x_overflow then
+				x_n <= (others => '0');
+				y_n <= y_plus_one;
+			elsif y_overflow then
+				x_n     <= (others => '0');
+				y_n     <= (others => '0');
+				state_n <= ERASING;
+				c_n     <= blank;
+				count_n <= (others => '0');
+				limit_n <= "1000000000";
+			else
+				state_n <= WRITE;
+			end if;
+		elsif state_c = LIMIT then
+			if x_overflow then
+				x_n <= to_unsigned(width - 1, x_n'high + 1);
+			end if;
+			if y_overflow then
+				y_n <= to_unsigned(height - 1, y_n'high + 1);
+			end if;
+			state_n <= WRITE;
+		elsif state_c = WRITE then
+			state_n   <= ACCEPT;
+			cursor_we <= '1';
+		elsif state_c = ERASING then
+			if count_c(limit_c'high + 3 downto limit_c'low + 3) /= limit_c then
+				count_n <= count_c + 1;
+				data_we <= '1';
+			else
+				state_n <= WRAP;
+			end if;
+		elsif state_c = ATTRIB1 then
+			case n1_c is
+			when x"00"  =>
+				attr_n    <= attr_default;
+				conceal_n <= false;
+			when x"01"  => attr_n(6) <= '1'; -- bold
+			when x"07"  => attr_n(7) <= '1'; -- reverse video
+			when x"08"  => conceal_n <= true;
+
+			-- when x"6c" => if n2_c = x"19" then ctl_n(2) <= '0'; end if; -- l, hide cursor
+			-- when x"68" => if n2_c = x"19" then ctl_n(2) <= '1'; end if; -- h, show cursor
+
+			-- @todo This should make the _text_ blink, not the cursor!
+			when x"05"  => ctl_n(1) <= '1'; -- blink slow
+			when x"19"  => ctl_n(1) <= '0'; -- blink off
+
+			when x"1E"  => attr_n(5 downto 3) <= "000"; -- 30
+			when x"1F"  => attr_n(5 downto 3) <= "001";
+			when x"20"  => attr_n(5 downto 3) <= "010";
+			when x"21"  => attr_n(5 downto 3) <= "011";
+			when x"22"  => attr_n(5 downto 3) <= "100";
+			when x"23"  => attr_n(5 downto 3) <= "101";
+			when x"24"  => attr_n(5 downto 3) <= "110";
+			when x"25"  => attr_n(5 downto 3) <= "111";
+
+			when x"28"  => attr_n(2 downto 0) <= "000"; -- 40
+			when x"29"  => attr_n(2 downto 0) <= "001";
+			when x"2A"  => attr_n(2 downto 0) <= "010";
+			when x"2B"  => attr_n(2 downto 0) <= "011";
+			when x"2C"  => attr_n(2 downto 0) <= "100";
+			when x"2D"  => attr_n(2 downto 0) <= "101";
+			when x"2E"  => attr_n(2 downto 0) <= "110";
+			when x"2F"  => attr_n(2 downto 0) <= "111";
+			when others =>
+			end case;
+			state_n <= ATTRIB2;
+		elsif state_c = ATTRIB2 then
+			-- @todo Implement two attributes in a row
+			state_n <= ACCEPT;
+		else
+			state_n <= RESET;
+			report "Invalid State" severity failure;
 		end if;
 	end process;
 end architecture;
