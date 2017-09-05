@@ -140,7 +140,8 @@ architecture rtl of h2 is
 
 	signal int_en_c, int_en_n:     std_logic :=  '0'; -- interrupt enable
 	signal irq_c, irq_n:           std_logic :=  '0'; -- interrupt request
-	signal irq_addr_c, irq_addr_n: std_logic_vector(irq_addr'range) :=  (others => '0');
+	signal irq_addr_c, irq_addr_n: std_logic_vector(irq_addr'range) := (others => '0');
+	signal pcp_c, pcp_n:           std_logic_vector(pc_c'range)     := (others => '0');
 
 	signal tos_c, tos_n: word := (others => '0'); -- top of stack
 	signal nos:          word := (others => '0'); -- next on stack
@@ -273,6 +274,7 @@ begin
 			int_en_c   <= '0';
 			irq_c      <= '0';
 			irq_addr_c <= (others => '0');
+			pcp_c      <= (others => '0');
 		elsif rising_edge(clk) then
 			vstkp_c    <= vstkp_n;
 			rstkp_c    <= rstkp_n;
@@ -281,11 +283,12 @@ begin
 			int_en_c   <= int_en_n;
 			irq_c      <= irq_n;
 			irq_addr_c <= irq_addr_n;
+			pcp_c      <= pcp_n;
 		end if;
 	end process;
 
 	stack_update: process(
-		pc_c,
+		pc_c, pcp_c,
 		insn,
 		vstkp_c, dd,
 		rstkp_c, rd,
@@ -306,7 +309,7 @@ begin
 		elsif is_interrupt = '1' then -- Interrupts are similar to a call
 			rstkp_n   <= rstkp_c + 1;
 			rstk_we   <= '1';
-			rstk_data <= "00" & pc_plus_one & "0";
+			rstk_data <= "00" & pcp_c & "0";
 		elsif is_instr.lit = '1' then
 			assert to_integer(vstkp_c) + 1 < stack_size;
 
@@ -331,33 +334,34 @@ begin
 	end process;
 
 	pc_update: process(
-		pc_c,insn, rtos_c, pc_plus_one,
+		pc_c, pcp_c, insn, rtos_c, pc_plus_one,
 		is_instr,
 		is_interrupt, irq_c, irq_addr_c, irq_addr,irq,
 		compare.zero,
 		stop)
 	begin
 		pc_n       <= pc_c;
-		irq_n      <= irq_c;
 		irq_addr_n <= irq_addr_c;
 		irq_n      <= irq;
+		pcp_n      <= pcp_c;
 
 		if irq = '1' then irq_addr_n <= irq_addr; end if;
 
 		if stop = '1' then
 			null;
 		elsif is_interrupt = '1' then -- Update PC on interrupt
-			irq_n      <= '0';
-			irq_addr_n <= (others => '0');
-			pc_n       <= (others => '0');
+			pc_n                 <= (others => '0');
 			pc_n(irq_addr'range) <= irq_addr_c;
 		else -- Update PC on normal operations
 			if is_instr.branch = '1' or (is_instr.branch0 = '1' and compare.zero = '1') or is_instr.call = '1' then
-				pc_n <=  insn(12 downto 0);
+				pc_n  <= insn(12 downto 0);
+				pcp_n <= pc_c;
 			elsif is_instr.alu = '1' and insn(4) = '1' then
-				pc_n <=  rtos_c(13 downto 1);
+				pc_n  <= rtos_c(13 downto 1);
+				pcp_n <= pc_c;
 			else
-				pc_n <=  pc_plus_one;
+				pc_n  <= pc_plus_one;
+				pcp_n <= pc_plus_one;
 			end if;
 		end if;
 	end process;
